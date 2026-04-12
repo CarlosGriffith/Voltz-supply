@@ -5,6 +5,10 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Aiven host/port/user/database appear in docs and db tooling; Netlify compares secret env
+  # values to the whole repo and fails the build on matches. Omit those paths from scanning.
+  # See https://docs.netlify.com/manage/security/secret-scanning/
+  SECRETS_SCAN_OMIT_PATHS = ".env.example,NETLIFY.md,scripts,server/db.mjs"
 
 [functions]
   directory = "netlify/functions"
