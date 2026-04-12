@@ -437,7 +437,8 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const moveSection = useCallback((id: string, direction: 'up' | 'down') => {
     setSections(prev => {
-      const sorted = [...prev].sort((a, b) => a.order - b.order);
+      const base = Array.isArray(prev) ? prev : DEFAULT_SECTIONS;
+      const sorted = [...base].sort((a, b) => a.order - b.order);
       const idx = sorted.findIndex(s => s.id === id);
       if (idx === -1) return prev;
       const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
@@ -451,11 +452,17 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const toggleVisibility = useCallback((id: string) => {
-    setSections(prev => prev.map(s => (s.id === id ? { ...s, visible: !s.visible } : s)));
+    setSections((prev) => {
+      const base = Array.isArray(prev) ? prev : DEFAULT_SECTIONS;
+      return base.map((s) => (s.id === id ? { ...s, visible: !s.visible } : s));
+    });
   }, []);
 
   const updateMarginTop = useCallback((id: string, value: number) => {
-    setSections(prev => prev.map(s => (s.id === id ? { ...s, marginTop: value } : s)));
+    setSections((prev) => {
+      const base = Array.isArray(prev) ? prev : DEFAULT_SECTIONS;
+      return base.map((s) => (s.id === id ? { ...s, marginTop: value } : s));
+    });
   }, []);
 
   const resetToDefaults = useCallback(() => {
@@ -464,7 +471,8 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const getSortedVisibleSections = useCallback(() => {
-    return [...sections].sort((a, b) => a.order - b.order).filter(s => s.visible);
+    const s = Array.isArray(sections) ? sections : DEFAULT_SECTIONS;
+    return [...s].sort((a, b) => a.order - b.order).filter((x) => x.visible);
   }, [sections]);
 
   const updateSettings = useCallback((newSettings: Partial<CMSSettings>) => {
@@ -544,7 +552,7 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteCategory = useCallback(async (id: string): Promise<{ success: boolean; error?: string }> => {
     // Save backup for rollback
-    const backup = [...categories];
+    const backup = [...(Array.isArray(categories) ? categories : [])];
     // Optimistic: remove from local state immediately
     setCategories(prev => prev.filter(c => c.id !== id));
 

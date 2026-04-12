@@ -321,11 +321,12 @@ export function mergePlaceholderCustomerRows(customers: POSCustomer[]): {
   displayCustomers: POSCustomer[];
   mergedPlaceholderIdsByCanonicalId: Map<string, string[]>;
 } {
+  const list = Array.isArray(customers) ? customers : [];
   const mergedPlaceholderIdsByCanonicalId = new Map<string, string[]>();
   const visitor: POSCustomer[] = [];
   const guest: POSCustomer[] = [];
   const rest: POSCustomer[] = [];
-  for (const c of customers) {
+  for (const c of list) {
     const k = String(c.name || '').trim().toLowerCase();
     if (k === 'visitor') visitor.push(c);
     else if (k === 'guest') guest.push(c);

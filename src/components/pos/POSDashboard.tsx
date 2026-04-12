@@ -66,6 +66,14 @@ const PieTooltip = ({ active, payload }: any) => {
 const POSDashboard: React.FC<POSDashboardProps> = ({
   quotes, orders, invoices, receipts, refunds, customers, quoteRequests,
 }) => {
+  const q = Array.isArray(quotes) ? quotes : [];
+  const o = Array.isArray(orders) ? orders : [];
+  const inv = Array.isArray(invoices) ? invoices : [];
+  const rec = Array.isArray(receipts) ? receipts : [];
+  const refd = Array.isArray(refunds) ? refunds : [];
+  const cust = Array.isArray(customers) ? customers : [];
+  const qrList = Array.isArray(quoteRequests) ? quoteRequests : [];
+
   // ─── Computed Analytics ───
   const analytics = useMemo(() => {
     const now = new Date();
@@ -73,7 +81,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
     const currentYear = now.getFullYear();
 
     // Revenue from paid invoices
-    const paidInvoices = invoices.filter(i => normalizeInvoiceStatus(i.status) === INVOICE_STATUS_PAID);
+    const paidInvoices = inv.filter(i => normalizeInvoiceStatus(i.status) === INVOICE_STATUS_PAID);
     const totalRevenue = paidInvoices.reduce((s, i) => s + i.total, 0);
 
     // Monthly revenue for last 9 months
@@ -87,8 +95,8 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
         const d = new Date(inv.paid_at || inv.created_at);
         return d.getMonth() === m && d.getFullYear() === y;
       });
-      const monthOrders = orders.filter(o => {
-        const d = new Date(o.created_at);
+      const monthOrders = o.filter((row) => {
+        const d = new Date(row.created_at);
         return d.getMonth() === m && d.getFullYear() === y;
       });
       revenueByMonth.push({
@@ -106,12 +114,12 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
 
     // Order statuses
     const orderStatusMap: Record<string, number> = {};
-    orders.forEach(o => { orderStatusMap[o.status] = (orderStatusMap[o.status] || 0) + 1; });
+    o.forEach((row) => { orderStatusMap[row.status] = (orderStatusMap[row.status] || 0) + 1; });
     const orderStatusData = Object.entries(orderStatusMap).map(([name, value]) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), value }));
 
     // Invoice statuses
     const invoiceStatusMap: Record<string, number> = {};
-    invoices.forEach(i => {
+    inv.forEach(i => {
       const k = normalizeInvoiceStatus(i.status);
       invoiceStatusMap[k] = (invoiceStatusMap[k] || 0) + 1;
     });
@@ -119,7 +127,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
 
     // Fastest selling products (aggregate line items from paid invoices and completed orders)
     const productSales: Record<string, { name: string; quantity: number; revenue: number; category: string }> = {};
-    [...paidInvoices, ...orders.filter(o => o.status === 'completed')].forEach(doc => {
+    [...paidInvoices, ...o.filter((row) => row.status === 'completed')].forEach(doc => {
       (doc.items || []).forEach((item: POSLineItem) => {
         const key = item.product_name || item.product_id;
         if (!productSales[key]) {
@@ -134,7 +142,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
     // Low stock simulation - products with declining sales or infrequent orders
     // We'll identify products that appear in orders but have low recent activity
     const allProducts: Record<string, { name: string; totalQty: number; lastOrderDate: string; category: string; brand: string }> = {};
-    [...invoices, ...orders].forEach(doc => {
+    [...inv, ...o].forEach(doc => {
       (doc.items || []).forEach((item: POSLineItem) => {
         const key = item.product_name || item.product_id;
         if (!allProducts[key]) {
@@ -176,7 +184,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
       let m = currentMonth - i;
       let y = currentYear;
       if (m < 0) { m += 12; y -= 1; }
-      const count = customers.filter(c => {
+      const count = cust.filter(c => {
         const d = new Date(c.created_at);
         return d.getMonth() === m && d.getFullYear() === y;
       }).length;
@@ -184,20 +192,20 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
     }
 
     // Refund rate
-    const refundRate = paidInvoices.length > 0 ? (refunds.length / paidInvoices.length) * 100 : 0;
-    const totalRefundAmount = refunds.reduce((s, r) => s + r.total, 0);
+    const refundRate = paidInvoices.length > 0 ? (refd.length / paidInvoices.length) * 100 : 0;
+    const totalRefundAmount = refd.reduce((s, r) => s + r.total, 0);
 
     // Average order value
     const avgOrderValue = paidInvoices.length > 0 ? totalRevenue / paidInvoices.length : 0;
 
     // Pending orders
-    const pendingOrders = orders.filter(o => o.status !== 'completed' && o.status !== 'cancelled').length;
-    const unpaidInvoices = invoices.filter(i => normalizeInvoiceStatus(i.status) === INVOICE_STATUS_UNPAID).length;
-    const newRequests = quoteRequests.filter(q => q.status === 'new').length;
+    const pendingOrders = o.filter((row) => row.status !== 'completed' && row.status !== 'cancelled').length;
+    const unpaidInvoices = inv.filter(i => normalizeInvoiceStatus(i.status) === INVOICE_STATUS_UNPAID).length;
+    const newRequests = qrList.filter((req) => req.status === 'new').length;
 
     // Quote conversion rate
-    const convertedQuotes = quotes.filter(q => q.status === 'converted' || q.status === 'accepted').length;
-    const quoteConversionRate = quotes.length > 0 ? (convertedQuotes / quotes.length) * 100 : 0;
+    const convertedQuotes = q.filter((qu) => qu.status === 'converted' || qu.status === 'accepted').length;
+    const quoteConversionRate = q.length > 0 ? (convertedQuotes / q.length) * 100 : 0;
 
     // Revenue by category
     const categoryRevenue: Record<string, number> = {};
@@ -221,7 +229,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
       totalRefundAmount, avgOrderValue, pendingOrders, unpaidInvoices,
       newRequests, quoteConversionRate, categoryData,
     };
-  }, [quotes, orders, invoices, receipts, refunds, customers, quoteRequests]);
+  }, [q, o, inv, rec, refd, cust, qrList]);
 
   // ─── KPI Cards ───
   const kpiCards = [
@@ -268,7 +276,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
     },
     {
       label: 'Total Customers',
-      value: customers.length,
+      value: cust.length,
       icon: Users,
       color: 'bg-cyan-500',
       bgLight: 'bg-cyan-50',
@@ -618,17 +626,17 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
                 <p className="text-[10px] text-red-500 font-medium">Total Refunded</p>
               </div>
               <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-center">
-                <p className="text-lg font-bold text-blue-600">{quotes.length}</p>
+                <p className="text-lg font-bold text-blue-600">{q.length}</p>
                 <p className="text-[10px] text-blue-500 font-medium">Total Quotes</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-100 text-center">
-                <p className="text-lg font-bold text-emerald-600">{receipts.length}</p>
+                <p className="text-lg font-bold text-emerald-600">{rec.length}</p>
                 <p className="text-[10px] text-emerald-500 font-medium">Receipts Issued</p>
               </div>
               <div className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-center">
-                <p className="text-lg font-bold text-purple-600">{orders.length}</p>
+                <p className="text-lg font-bold text-purple-600">{o.length}</p>
                 <p className="text-[10px] text-purple-500 font-medium">Total Orders</p>
               </div>
             </div>
@@ -643,28 +651,28 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
             <Clock className="w-5 h-5 text-gray-400" />
             <h3 className="text-lg font-bold text-[#1a2332]">Recent Orders</h3>
           </div>
-          {orders.slice(0, 6).map((o, i) => (
-            <div key={o.id} className="flex items-center justify-between py-3 border-b border-gray-50 last:border-0">
+          {o.slice(0, 6).map((ordRow, i) => (
+            <div key={ordRow.id} className="flex items-center justify-between py-3 border-b border-gray-50 last:border-0">
               <div className="flex items-center gap-3">
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold ${
-                  o.status === 'completed' ? 'bg-green-500' : o.status === 'cancelled' ? 'bg-red-500' : o.status === 'processing' ? 'bg-purple-500' : 'bg-blue-500'
+                  ordRow.status === 'completed' ? 'bg-green-500' : ordRow.status === 'cancelled' ? 'bg-red-500' : ordRow.status === 'processing' ? 'bg-purple-500' : 'bg-blue-500'
                 }`}>
-                  {o.order_number?.slice(-2) || (i + 1)}
+                  {ordRow.order_number?.slice(-2) || (i + 1)}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-[#1a2332]">{o.order_number}</p>
-                  <p className="text-xs text-gray-400">{o.customer_name || 'Walk-in'}</p>
+                  <p className="text-sm font-semibold text-[#1a2332]">{ordRow.order_number}</p>
+                  <p className="text-xs text-gray-400">{ordRow.customer_name || 'Walk-in'}</p>
                 </div>
               </div>
               <div className="text-right">
-                <p className="text-sm font-bold text-[#1a2332]">{fmtMoneyFull(o.total)}</p>
+                <p className="text-sm font-bold text-[#1a2332]">{fmtMoneyFull(ordRow.total)}</p>
                 <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${
-                  o.status === 'completed' ? 'bg-green-100 text-green-700' : o.status === 'cancelled' ? 'bg-red-100 text-red-700' : o.status === 'processing' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-                }`}>{o.status}</span>
+                  ordRow.status === 'completed' ? 'bg-green-100 text-green-700' : ordRow.status === 'cancelled' ? 'bg-red-100 text-red-700' : ordRow.status === 'processing' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                }`}>{ordRow.status}</span>
               </div>
             </div>
           ))}
-          {orders.length === 0 && <p className="text-sm text-gray-400 py-6 text-center">No orders yet</p>}
+          {o.length === 0 && <p className="text-sm text-gray-400 py-6 text-center">No orders yet</p>}
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
@@ -672,7 +680,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
             <MessageSquare className="w-5 h-5 text-gray-400" />
             <h3 className="text-lg font-bold text-[#1a2332]">Recent Quote Requests</h3>
           </div>
-          {quoteRequests.slice(0, 6).map((qr, i) => (
+          {qrList.slice(0, 6).map((qr, i) => (
             <div key={qr.id} className="flex items-center justify-between py-3 border-b border-gray-50 last:border-0">
               <div className="flex items-center gap-3">
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold ${
@@ -694,7 +702,7 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
               </div>
             </div>
           ))}
-          {quoteRequests.length === 0 && <p className="text-sm text-gray-400 py-6 text-center">No requests yet</p>}
+          {qrList.length === 0 && <p className="text-sm text-gray-400 py-6 text-center">No requests yet</p>}
         </div>
       </div>
     </div>

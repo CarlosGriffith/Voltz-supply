@@ -149,7 +149,7 @@ const CMSPanel: React.FC = () => {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const sorted = [...sections].sort((a, b) => a.order - b.order);
+  const sorted = [...(Array.isArray(sections) ? sections : [])].sort((a, b) => a.order - b.order);
   const visibleCount = sorted.filter(s => s.visible).length;
   const totalCount = sorted.length;
 

@@ -464,7 +464,8 @@ export function useLiveSections() {
   }, [loadSections, checkForUpdates]);
 
   const getSortedVisibleSections = useCallback(() => {
-    return [...sections].sort((a, b) => a.order - b.order).filter(s => s.visible);
+    const s = Array.isArray(sections) ? sections : DEFAULT_SECTIONS;
+    return [...s].sort((a, b) => a.order - b.order).filter((x) => x.visible);
   }, [sections]);
 
   return { sections, loading, getSortedVisibleSections };
