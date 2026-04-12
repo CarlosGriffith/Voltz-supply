@@ -147,15 +147,40 @@ export function createApp(options = {}) {
 app.get('/api/health', async (req, res) => {
   const payload = { ok: true, service: 'voltz-api' };
   if (req.query.db === '1') {
-    try {
-      await pool.query('SELECT 1 AS ok');
-      payload.db = 'ok';
-    } catch (e) {
+    if (!process.env.AIVEN_MYSQL_PASSWORD) {
       return res.status(503).json({
         ok: false,
         service: 'voltz-api',
         db: 'error',
-        error: e.message || String(e),
+        error:
+          'AIVEN_MYSQL_PASSWORD is not set. Add it under Site configuration → Environment variables on Netlify (or .env locally), then redeploy.',
+        code: 'ENV_MISSING_PASSWORD',
+      });
+    }
+    try {
+      await pool.query('SELECT 1 AS ok');
+      payload.db = 'ok';
+    } catch (e) {
+      const base = e?.message || String(e);
+      const code = e?.code != null ? String(e.code) : undefined;
+      const errno = e?.errno != null ? Number(e.errno) : undefined;
+      const sqlState = e?.sqlState != null ? String(e.sqlState) : undefined;
+      const hint =
+        code === 'ECONNREFUSED'
+          ? ' Check AIVEN_MYSQL_HOST and AIVEN_MYSQL_PORT (Aiven uses a custom port, not 3306).'
+          : code === 'ETIMEDOUT' || code === 'ENOTFOUND'
+            ? ' Check AIVEN_MYSQL_HOST and network access from Netlify to your DB.'
+            : /certificate|SSL|TLS|self signed/i.test(base)
+              ? ' Ensure scripts/aiven-ca.pem is deployed or set AIVEN_MYSQL_SSL_CA to the Aiven CA PEM in Netlify.'
+              : '';
+      return res.status(503).json({
+        ok: false,
+        service: 'voltz-api',
+        db: 'error',
+        error: `${base}${hint}`,
+        code,
+        errno,
+        sqlState,
       });
     }
   }

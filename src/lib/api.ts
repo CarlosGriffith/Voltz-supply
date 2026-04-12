@@ -64,21 +64,34 @@ export async function getApiHealthDb(): Promise<{
   const base = import.meta.env.VITE_API_URL ?? '';
   try {
     const r = await fetch(`${base}/api/health?db=1`);
-    const j = (await r.json().catch(() => ({}))) as {
+    const text = await r.text();
+    let j: {
       ok?: boolean;
       db?: string;
       error?: string;
-    };
+      code?: string;
+      errno?: number;
+      sqlState?: string;
+    } = {};
+    try {
+      j = JSON.parse(text) as typeof j;
+    } catch {
+      /* non-JSON body (e.g. HTML error page) */
+    }
     const dbOk = r.ok && j.ok !== false && j.db === 'ok';
+    const parts: string[] = [];
+    if (typeof j.error === 'string' && j.error.trim()) parts.push(j.error.trim());
+    if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
+    if (!dbOk && parts.length === 0 && text.trim()) {
+      parts.push(text.trim().slice(0, 400));
+    }
+    if (!dbOk && parts.length === 0) {
+      parts.push(`HTTP ${r.status} ${r.statusText || ''}`.trim());
+    }
     return {
       reachable: true,
       dbOk,
-      error:
-        typeof j.error === 'string' && j.error.trim()
-          ? j.error
-          : !dbOk
-            ? 'Database connection failed'
-            : undefined,
+      error: !dbOk ? parts.join(' ') : undefined,
     };
   } catch (e) {
     return {
