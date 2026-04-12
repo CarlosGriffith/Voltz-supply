@@ -65,6 +65,20 @@ If the SPA is on **`www`** (CloudFront) and the API on **Netlify**, **prefer sam
 - Open `https://<your-site>.netlify.app/api/health?db=1` and confirm `db` is `ok`.
 - If `/uploads/...` images 404, confirm blob sync ran and check **Functions** logs.
 
+### `/api/health` returns 404 on your custom domain (e.g. voltzsupply.com)
+
+`netlify.toml` only applies to traffic that **Netlify’s CDN** serves. A **404** on `https://voltzsupply.com/api/...` almost always means **`voltzsupply.com` is not going through Netlify** for that request (or the domain is not attached to this site).
+
+1. **Compare with the Netlify default host**  
+   Open `https://voltz-supply.netlify.app/api/health?db=1` (use your real `*.netlify.app` name from **Site settings → Domain management**).  
+   - If this **works** but **`voltzsupply.com`** does not → DNS or routing for the custom domain is wrong, or the apex domain points at **S3 / CloudFront / another host** that has no `/api` route.
+
+2. **Serve the whole site (including `/api`) from Netlify**  
+   In Netlify: **Domain management** → add **`voltzsupply.com`** and **`www.voltzsupply.com`** to this site → follow Netlify’s **DNS** instructions at your registrar (often A/AAAA for apex, CNAME for `www`). Wait for DNS to propagate, then test again.
+
+3. **If you must keep the marketing domain on CloudFront + S3**  
+   `/api` will 404 until you add a CloudFront **behavior** that forwards `/api/*` to your Netlify origin. See **`CLOUDFRONT_API.md`**.
+
 ## Limits
 
 - Serverless payload limit (~6 MB buffered) caps large uploads; product image uploads use a 4 MB limit in blob mode.
