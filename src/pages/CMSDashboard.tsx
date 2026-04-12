@@ -20,6 +20,7 @@ import { fmtCurrency, fmtDatePOS, safeNum, DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS,
 import { saveConfigDetailed, saveConfig as dbSaveConfig, fetchConfig, saveConfig } from '@/lib/cmsData';
 import { usePOSRealtime, useSyncSelectedCustomerFromList } from '@/hooks/usePOSRealtime';
 import {
+  asPosRows,
   POSCustomer, POSQuote, POSOrder, POSInvoice, POSReceipt, POSRefund, POSQuoteRequest, POSSentEmail, POSSmtpSettings, POSLineItem,
   fetchCustomers, saveCustomer, deleteCustomer, fetchQuotes, fetchOrders, fetchInvoices, fetchReceipts, fetchRefunds,
   fetchQuoteRequests, fetchSentEmails, fetchSmtpSettings, saveSmtpSettings,
@@ -911,7 +912,8 @@ const CMSDashboardInner: React.FC = () => {
   /** Latest successful send time per quote id (from sent-email log). */
   const quoteEmailSentAtByQuoteId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const e of sentEmails) {
+    const rows = Array.isArray(sentEmails) ? sentEmails : [];
+    for (const e of rows) {
       if ((e.document_type || '').toLowerCase() !== 'quote' || !e.document_id) continue;
       if (e.status !== 'sent' && e.status !== 'resent') continue;
       const prev = map.get(e.document_id);
@@ -937,15 +939,21 @@ const CMSDashboardInner: React.FC = () => {
       fetchQuotes(), fetchOrders(), fetchInvoices(), fetchReceipts(), fetchRefunds(),
       fetchCustomers(), fetchQuoteRequests(), fetchSentEmails(), fetchSmtpSettings(),
     ]);
-    setQuotes(q); setOrders(o); setInvoices(i); setReceipts(r); setRefunds(ref);
-    setCustomers(c); setQuoteRequests(qr); setSentEmails(e);
+    setQuotes(asPosRows<POSQuote>(q));
+    setOrders(asPosRows<POSOrder>(o));
+    setInvoices(asPosRows<POSInvoice>(i));
+    setReceipts(asPosRows<POSReceipt>(r));
+    setRefunds(asPosRows<POSRefund>(ref));
+    setCustomers(asPosRows<POSCustomer>(c));
+    setQuoteRequests(asPosRows<POSQuoteRequest>(qr));
+    setSentEmails(asPosRows<POSSentEmail>(e));
     if (smtp) setSmtpSettings(smtp);
   }, []);
 
   /** POS Checkout applies store credit server-side; refresh CRM customer rows so Store Credit column stays accurate. */
   const refreshCustomers = useCallback(async () => {
     const c = await fetchCustomers();
-    setCustomers(c);
+    setCustomers(asPosRows<POSCustomer>(c));
   }, []);
 
   useEffect(() => {

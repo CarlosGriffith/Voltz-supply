@@ -41,6 +41,11 @@ async function handleResponse(res: Response) {
   return null;
 }
 
+/** Use when apiGet must yield a JSON array; null / non-array bodies become []. */
+export function ensureArray<T>(data: unknown): T[] {
+  return Array.isArray(data) ? (data as T[]) : [];
+}
+
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   return handleResponse(await apiFetch(path)) as Promise<T>;
 }

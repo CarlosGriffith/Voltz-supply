@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPatch, apiDelete, apiUploadFile } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, apiUploadFile, ensureArray } from '@/lib/api';
 import { Product } from '@/data/products';
 
 export interface ProductOverride {
@@ -64,9 +64,9 @@ export function compressImageToBlob(file: File): Promise<Blob> {
 
 export async function fetchProductOverrides(): Promise<Record<string, ProductOverride>> {
   try {
-    const data = await apiGet<any[]>('/api/cms/overrides');
+    const data = await apiGet<unknown>('/api/cms/overrides');
     const overrides: Record<string, ProductOverride> = {};
-    for (const row of data || []) {
+    for (const row of ensureArray<any>(data)) {
       overrides[row.product_id] = {
         id: row.product_id,
         name: row.name ?? undefined,
@@ -161,8 +161,8 @@ function toJsonbString(val: unknown): string {
 
 export async function fetchCustomProducts(): Promise<Product[]> {
   try {
-    const data = await apiGet<any[]>('/api/cms/custom-products');
-    return (data || []).map(row => ({
+    const data = await apiGet<unknown>('/api/cms/custom-products');
+    return ensureArray<any>(data).map((row) => ({
       id: row.id,
       name: row.name,
       otherNames: row.other_names || '',
@@ -281,9 +281,9 @@ export async function deleteCustomProduct(productId: string): Promise<boolean> {
 
 export async function fetchProductCountsByCategory(): Promise<Record<string, number>> {
   try {
-    const data = await apiGet<Array<{ category_slug: string }>>('/api/cms/custom-products');
+    const data = await apiGet<unknown>('/api/cms/custom-products');
     const counts: Record<string, number> = {};
-    for (const row of data || []) {
+    for (const row of ensureArray<{ category_slug: string }>(data)) {
       const slug = row.category_slug;
       if (slug) counts[slug] = (counts[slug] || 0) + 1;
     }
@@ -296,11 +296,11 @@ export async function fetchProductCountsByCategory(): Promise<Record<string, num
 export async function fetchCategories(): Promise<CMSCategoryRow[]> {
   try {
     const [catResult, productCounts] = await Promise.all([
-      apiGet<any[]>('/api/cms/categories'),
+      apiGet<unknown>('/api/cms/categories'),
       fetchProductCountsByCategory(),
     ]);
 
-    return (catResult || []).map(row => ({
+    return ensureArray<any>(catResult).map((row) => ({
       id: row.id,
       slug: row.slug,
       name: row.name,

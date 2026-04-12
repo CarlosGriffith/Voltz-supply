@@ -1,7 +1,10 @@
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, ensureArray } from '@/lib/api';
 import { isValidEmailFormatForForms, taxAmountFromSubtotalAndGctPercent } from '@/lib/utils';
 import { broadcastPOSChange, broadcastPOSCustomerRelatedTables } from '@/lib/posBroadcast';
 import { parseWebsiteQuoteRequestLines, categorySlugForWebsiteLine } from '@/lib/websiteQuoteRequestParse';
+
+/** POS list rows — same as {@link ensureArray}. */
+export const asPosRows = ensureArray;
 
 function assertSavedRow(data: unknown, label: string): asserts data is { id: string; items?: unknown } {
   if (data == null || typeof data !== 'object' || !(data as { id?: string }).id) {
@@ -301,8 +304,8 @@ export async function generateDocNumber(type: 'quote' | 'order' | 'invoice' | 'r
 
 export async function fetchCustomers(): Promise<POSCustomer[]> {
   try {
-    const data = await apiGet<POSCustomer[]>('/api/pos/customers');
-    return (data || []).map((r) => ({
+    const data = await apiGet<unknown>('/api/pos/customers');
+    return asPosRows<POSCustomer>(data).map((r) => ({
       ...r,
       store_credit: Number(r.store_credit) || 0,
       account_balance: Number(r.account_balance) || 0,
@@ -453,7 +456,8 @@ export async function addCustomerStoreCredit(customerId: string, addAmount: numb
 
 export async function fetchQuoteRequests(): Promise<POSQuoteRequest[]> {
   try {
-    return await apiGet<POSQuoteRequest[]>('/api/pos/quote-requests');
+    const data = await apiGet<unknown>('/api/pos/quote-requests');
+    return asPosRows<POSQuoteRequest>(data);
   } catch (e) {
     console.error('fetchQuoteRequests:', e);
     return [];
@@ -846,8 +850,8 @@ export async function markQuoteRequestEmailSent(id: string): Promise<boolean> {
 
 export async function fetchQuotes(): Promise<POSQuote[]> {
   try {
-    const data = await apiGet<any[]>('/api/pos/quotes');
-    return (data || []).map(r => ({
+    const data = await apiGet<unknown>('/api/pos/quotes');
+    return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
       subtotal: Number(r.subtotal) || 0, tax_rate: Number(r.tax_rate) || 0, tax_amount: Number(r.tax_amount) || 0,
@@ -901,8 +905,8 @@ export async function saveQuote(q: Partial<POSQuote>, opts?: POSSaveOptions): Pr
 
 export async function fetchOrders(): Promise<POSOrder[]> {
   try {
-    const data = await apiGet<any[]>('/api/pos/orders');
-    return (data || []).map(r => ({
+    const data = await apiGet<unknown>('/api/pos/orders');
+    return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
       subtotal: Number(r.subtotal) || 0, tax_rate: Number(r.tax_rate) || 0, tax_amount: Number(r.tax_amount) || 0,
@@ -945,8 +949,8 @@ export async function saveOrder(o: Partial<POSOrder>, opts?: POSSaveOptions): Pr
 
 export async function fetchInvoices(): Promise<POSInvoice[]> {
   try {
-    const data = await apiGet<any>('/api/pos/invoices');
-    const rows = Array.isArray(data) ? data : [];
+    const data = await apiGet<unknown>('/api/pos/invoices');
+    const rows = asPosRows<any>(data);
     return rows
       .map((r) => {
         try {
@@ -1007,8 +1011,8 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
 
 export async function fetchReceipts(): Promise<POSReceipt[]> {
   try {
-    const data = await apiGet<any[]>('/api/pos/receipts');
-    return (data || []).map(r => ({
+    const data = await apiGet<unknown>('/api/pos/receipts');
+    return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
       amount_paid: Number(r.amount_paid) || 0, total: Number(r.total) || 0,
@@ -1047,8 +1051,8 @@ export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt 
 
 export async function fetchRefunds(): Promise<POSRefund[]> {
   try {
-    const data = await apiGet<any[]>('/api/pos/refunds');
-    return (data || []).map(r => ({
+    const data = await apiGet<unknown>('/api/pos/refunds');
+    return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
       subtotal: Number(r.subtotal) || 0, tax_amount: Number(r.tax_amount) || 0, total: Number(r.total) || 0,
@@ -1086,7 +1090,8 @@ export async function saveRefund(ref: Partial<POSRefund>): Promise<POSRefund | n
 
 export async function fetchSentEmails(): Promise<POSSentEmail[]> {
   try {
-    return await apiGet<POSSentEmail[]>('/api/pos/sent-emails');
+    const data = await apiGet<unknown>('/api/pos/sent-emails');
+    return asPosRows<POSSentEmail>(data);
   } catch (err) {
     console.error('fetchSentEmails:', err);
     return [];
