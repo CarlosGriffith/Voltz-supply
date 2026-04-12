@@ -764,7 +764,7 @@ function posReceiptToEmailPreviewProps(r: POSReceipt): PrintDocProps {
 const CMSDashboardInner: React.FC = () => {
   const { notify } = useCMSNotification();
   const navigate = useNavigate();
-  const { isAuthenticated, username, logout } = useCMSAuth();
+  const { username, logout } = useCMSAuth();
   type PageKey =
     | 'pos-dashboard'
     | 'pos-quotes'
@@ -948,7 +948,9 @@ const CMSDashboardInner: React.FC = () => {
     setCustomers(c);
   }, []);
 
-  useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated, loadData]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // ─── Real-time subscriptions: auto-refresh all POS data on any change across all devices ───
   // NOTE: SMTP settings are excluded - they only update on Save click
@@ -956,15 +958,10 @@ const CMSDashboardInner: React.FC = () => {
     setCustomers, setQuotes, setOrders, setInvoices, setReceipts,
     setRefunds, setQuoteRequests, setSentEmails,
   }), []);
-  usePOSRealtime(realtimeSetters, isAuthenticated);
+  usePOSRealtime(realtimeSetters, true);
 
   /** Keep History / edit-customer form in sync when `customers` refetches (store credit, balance). */
   useSyncSelectedCustomerFromList(customers, setSelectedCustomer);
-
-
-  useEffect(() => { if (!isAuthenticated) navigate('/login'); }, [isAuthenticated, navigate]);
-  if (!isAuthenticated) return null;
-
 
   const handleLogout = () => { logout(); navigate('/login'); };
 

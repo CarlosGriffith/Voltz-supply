@@ -13,6 +13,8 @@ import ProductCategory from "./pages/ProductCategory";
 import CMSLogin from "./pages/CMSLogin";
 import CMSDashboard from "./pages/CMSDashboard";
 import CompanyProfile from "./pages/CompanyProfile";
+import { RequireCMSAuth } from "@/components/RequireCMSAuth";
+import { RouteErrorBoundary } from "@/components/RouteErrorFallback";
 
 const queryClient = new QueryClient();
 
@@ -29,7 +31,16 @@ const App = () => (
                 <Route path="/" element={<Index />} />
                 <Route path="/products/:category" element={<ProductCategory />} />
                 <Route path="/login" element={<CMSLogin />} />
-                <Route path="/cms" element={<CMSDashboard />} />
+                <Route
+                  path="/cms"
+                  element={
+                    <RequireCMSAuth>
+                      <RouteErrorBoundary>
+                        <CMSDashboard />
+                      </RouteErrorBoundary>
+                    </RequireCMSAuth>
+                  }
+                />
                 <Route path="/company-profile" element={<CompanyProfile />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
