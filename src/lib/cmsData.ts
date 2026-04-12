@@ -295,22 +295,55 @@ export async function fetchProductCountsByCategory(): Promise<Record<string, num
 
 export async function fetchCategories(): Promise<CMSCategoryRow[]> {
   try {
-    const [catResult, productCounts] = await Promise.all([
+    const [catResult, customProducts] = await Promise.all([
       apiGet<unknown>('/api/cms/categories'),
-      fetchProductCountsByCategory(),
+      fetchCustomProducts(),
     ]);
 
-    return ensureArray<any>(catResult).map((row) => ({
-      id: row.id,
-      slug: row.slug,
-      name: row.name,
-      description: row.description || '',
-      color: row.color || '#e31e24',
-      icon: row.icon || 'Package',
-      productCount: productCounts[row.slug] || 0,
-      visible: row.visible !== 0 && row.visible !== false,
-      isCustom: Boolean(row.is_custom),
-    }));
+    const productCounts: Record<string, number> = {};
+    for (const p of customProducts) {
+      if (p.showOnWebsite === false) continue;
+      const slug = (p.categorySlug || '').trim() || 'uncategorized';
+      productCounts[slug] = (productCounts[slug] || 0) + 1;
+    }
+
+    const rows = ensureArray<any>(catResult);
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        description: row.description || '',
+        color: row.color || '#e31e24',
+        icon: row.icon || 'Package',
+        productCount: productCounts[row.slug] || 0,
+        visible: row.visible !== 0 && row.visible !== false,
+        isCustom: Boolean(row.is_custom),
+      }));
+    }
+
+    // cms_categories empty but catalog has rows: derive nav from product slugs/names
+    const bySlug = new Map<string, string>();
+    for (const p of customProducts) {
+      if (p.showOnWebsite === false) continue;
+      const slug = (p.categorySlug || '').trim() || 'uncategorized';
+      const name = (p.category || slug).trim() || 'Uncategorized';
+      if (!bySlug.has(slug)) bySlug.set(slug, name);
+    }
+
+    return [...bySlug.entries()]
+      .map(([slug, name]) => ({
+        id: `derived-${slug}`,
+        slug,
+        name,
+        description: '',
+        color: '#e31e24',
+        icon: 'Package',
+        productCount: productCounts[slug] || 0,
+        visible: true,
+        isCustom: true,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }
@@ -414,28 +447,41 @@ export async function fetchFeaturedProducts(): Promise<Product[]> {
 
   const featured: Product[] = [];
 
+  const pushFeatured = (product: Product, override?: ProductOverride) => {
+    featured.push({
+      ...product,
+      ...(override ? {
+        name: override.name ?? product.name,
+        price: override.price ?? product.price,
+        originalPrice: override.originalPrice ?? product.originalPrice,
+        image: override.image ?? product.image,
+        description: override.description ?? product.description,
+        brand: override.brand ?? product.brand,
+        inStock: override.inStock ?? product.inStock,
+        badge: override.badge !== undefined ? override.badge : product.badge,
+        badgeColor: override.badgeColor !== undefined ? override.badgeColor : product.badgeColor,
+      } : {}),
+      isFeatured: true,
+    });
+  };
+
   for (const product of customProducts) {
     if (product.showOnWebsite === false) continue;
     const override = overrides[product.id];
     const isFeatured = override?.isFeatured ?? product.isFeatured;
     if (isFeatured) {
-      featured.push({
-        ...product,
-        ...(override ? {
-          name: override.name ?? product.name,
-          price: override.price ?? product.price,
-          originalPrice: override.originalPrice ?? product.originalPrice,
-          image: override.image ?? product.image,
-          description: override.description ?? product.description,
-          brand: override.brand ?? product.brand,
-          inStock: override.inStock ?? product.inStock,
-          badge: override.badge !== undefined ? override.badge : product.badge,
-          badgeColor: override.badgeColor !== undefined ? override.badgeColor : product.badgeColor,
-        } : {}),
-        isFeatured: true,
-      });
+      pushFeatured(product, override);
     }
   }
+
+  if (featured.length === 0) {
+    const pool = customProducts.filter((p) => p.showOnWebsite !== false);
+    pool.sort((a, b) => (b.stockCount || 0) - (a.stockCount || 0) || a.name.localeCompare(b.name));
+    for (const product of pool.slice(0, 12)) {
+      pushFeatured(product, overrides[product.id]);
+    }
+  }
+
   return featured;
 }
 
