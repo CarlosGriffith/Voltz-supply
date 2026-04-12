@@ -1,15 +1,42 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? '';
+type VoltzWindow = Window & { __VOLTZ_API_ORIGIN__?: string };
+
+/**
+ * Base URL for API calls (no trailing slash). Empty = same origin.
+ * Use when the SPA is on a different host than the API (e.g. CloudFront+S3 → Netlify API):
+ * 1) Build with `VITE_API_URL=https://your-site.netlify.app`, or
+ * 2) Set `<meta name="voltz-api-origin" content="https://your-site.netlify.app" />` in index.html, or
+ * 3) `window.__VOLTZ_API_ORIGIN__ = 'https://your-site.netlify.app'` before the app bundle loads.
+ */
+export function getApiBaseUrl(): string {
+  const fromVite = String(import.meta.env.VITE_API_URL ?? '').trim();
+  if (fromVite) return fromVite.replace(/\/$/, '');
+
+  if (typeof document !== 'undefined') {
+    const meta = document.querySelector('meta[name="voltz-api-origin"]');
+    const c = meta?.getAttribute('content')?.trim();
+    if (c) return c.replace(/\/$/, '');
+  }
+
+  if (typeof window !== 'undefined') {
+    const w = window as VoltzWindow;
+    const o = String(w.__VOLTZ_API_ORIGIN__ ?? '').trim();
+    if (o) return o.replace(/\/$/, '');
+  }
+
+  return '';
+}
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const url = `${API_BASE}${path}`;
+  const base = getApiBaseUrl();
+  const url = `${base}${path}`;
   try {
     return await fetch(url, init);
   } catch (e) {
     if (e instanceof TypeError) {
       const hint =
-        API_BASE === ''
+        base === ''
           ? ' Start the API (npm run dev:api) and open the app from the Vite dev server (npm run dev on port 8000), or run npm run dev:full.'
-          : ' If you use VITE_API_URL, its host must match how you open the site (e.g. do not mix localhost vs 127.0.0.1 vs a LAN IP), or leave VITE_API_URL unset so /api is proxied.';
+          : ' If you use VITE_API_URL / voltz-api-origin, its host must match CORS expectations, or leave them unset on Netlify so /api is same-origin.';
       throw new Error(`Cannot reach the server (${url}).${hint}`);
     }
     throw e;
@@ -61,7 +88,7 @@ export async function getApiHealthDb(): Promise<{
   dbOk: boolean;
   error?: string;
 }> {
-  const base = import.meta.env.VITE_API_URL ?? '';
+  const base = getApiBaseUrl();
   try {
     const r = await fetch(`${base}/api/health?db=1`);
     const text = await r.text();
@@ -86,7 +113,7 @@ export async function getApiHealthDb(): Promise<{
     if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
     if (!dbOk && looksLikeHtml) {
       parts.push(
-        'The API returned the website HTML instead of JSON. Common causes: (1) CloudFront SPA rewrite sending /api/* to index.html — update cloudfront-function.js to skip /api/* and redeploy the function; (2) static hosting with no API — use Netlify (with netlify.toml /api rewrite) or add a CloudFront behavior/origin for /api.'
+        'The API returned HTML instead of JSON: your browser is not reaching Netlify’s /api. Fix: set the API origin to your Netlify site — build with VITE_API_URL=https://<your-site>.netlify.app, or add <meta name="voltz-api-origin" content="https://<your-site>.netlify.app" /> to index.html (no trailing slash). On CloudFront, also ensure cloudfront-function.js does not rewrite /api/* to index.html.'
       );
     } else if (!dbOk && parts.length === 0 && text.trim()) {
       parts.push(text.trim().slice(0, 400));

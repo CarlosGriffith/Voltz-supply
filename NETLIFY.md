@@ -16,9 +16,30 @@
 | `AIVEN_MYSQL_PASSWORD` | Yes | Secret |
 | `AIVEN_MYSQL_DATABASE` | Yes | e.g. `defaultdb` |
 | `AIVEN_CA_PATH` | If CA not bundled | Default bundle includes `scripts/aiven-ca.pem` via `included_files` |
-| `VITE_API_URL` | No | Leave **empty** so the browser calls `/api` on the same Netlify hostname |
+| `VITE_API_URL` | No | Leave **empty** when the site is served from Netlify so `/api` is same-origin. See **Split hosting** below if the SPA is elsewhere. |
 
 Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netlify function already uses blob storage.
+
+### Split hosting (SPA on S3 / CloudFront, API on Netlify)
+
+If visitors load **HTML/JS from AWS** (or any static host) but you want **only the API on Netlify**, the browser must call your Netlify origin explicitly. Same-origin `/api` on `www.yoursite.com` hits S3 and returns HTML — not the Netlify function.
+
+**Pick one:**
+
+1. **Simplest — host the whole site on Netlify**  
+   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset. `netlify.toml` already rewrites `/api/*` to the serverless function.
+
+2. **Keep static frontend on CloudFront/S3** — point API calls at Netlify:
+   - In Netlify: note your site URL, e.g. `https://voltz-supply.netlify.app` (or the ***.netlify.app** URL from **Site settings → Domain management**).
+   - Either:
+     - Set **`VITE_API_URL`** to that URL (no trailing slash) in the environment where you **build** the SPA, then rebuild and upload `dist/` to S3, **or**
+     - Edit **`index.html`** in the built output and set  
+       `<meta name="voltz-api-origin" content="https://voltz-supply.netlify.app" />`  
+       (same URL; no rebuild needed if you only change the meta).
+   - Ensure **CloudFront** does not rewrite `/api/*` to `index.html` (see `cloudfront-function.js` in this repo).
+   - The API already enables CORS (`Access-Control-Allow-Origin` reflects the request origin), so cross-origin calls from your marketing domain are allowed.
+
+3. **Advanced** — CloudFront **second origin** for `/api/*` to Netlify (no `VITE_API_URL` needed if the viewer URL path is still `/api` on the same domain). Requires AWS behavior/origin configuration beyond this repo.
 
 4. **Product images (Blobs)**  
    Local files under `server/uploads/` are **not** deployed. After importing data or saving images locally, push binaries to Netlify Blobs **once** (per site):
