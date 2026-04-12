@@ -78,11 +78,17 @@ export async function getApiHealthDb(): Promise<{
     } catch {
       /* non-JSON body (e.g. HTML error page) */
     }
-    const dbOk = r.ok && j.ok !== false && j.db === 'ok';
+    const looksLikeHtml =
+      /^\s*<!DOCTYPE/i.test(text) || /<html[\s>]/i.test(text.slice(0, 500));
+    const dbOk = r.ok && j.ok !== false && j.db === 'ok' && !looksLikeHtml;
     const parts: string[] = [];
     if (typeof j.error === 'string' && j.error.trim()) parts.push(j.error.trim());
     if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
-    if (!dbOk && parts.length === 0 && text.trim()) {
+    if (!dbOk && looksLikeHtml) {
+      parts.push(
+        'The API returned the website HTML instead of JSON. Common causes: (1) CloudFront SPA rewrite sending /api/* to index.html — update cloudfront-function.js to skip /api/* and redeploy the function; (2) static hosting with no API — use Netlify (with netlify.toml /api rewrite) or add a CloudFront behavior/origin for /api.'
+      );
+    } else if (!dbOk && parts.length === 0 && text.trim()) {
       parts.push(text.trim().slice(0, 400));
     }
     if (!dbOk && parts.length === 0) {

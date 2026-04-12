@@ -19,11 +19,24 @@
 //
 // This REPLACES the need for custom error pages (403/404 → index.html)
 // and is more performant.
+//
+// IMPORTANT: Paths under /api/* and /uploads/* must NOT be rewritten to index.html, or the
+// browser receives HTML instead of JSON from your API. If your distribution’s default origin
+// is S3-only, add a separate origin/behavior so /api/* is served by your API (e.g. Netlify).
 // ============================================================
 
 function handler(event) {
   var request = event.request;
   var uri = request.uri;
+
+  // Never rewrite API or upload routes — those must reach your backend (e.g. Netlify Functions,
+  // API Gateway, or another origin). Rewriting them to index.html breaks /api/* JSON responses.
+  if (uri.startsWith('/api/') || uri === '/api') {
+    return request;
+  }
+  if (uri.startsWith('/uploads/') || uri === '/uploads') {
+    return request;
+  }
 
   // If the URI has a file extension, serve the file as-is
   if (uri.includes('.')) {
