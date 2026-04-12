@@ -22,25 +22,17 @@ Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netli
 
 ### Split hosting (SPA on S3 / CloudFront, API on Netlify)
 
-If visitors load **HTML/JS from AWS** (or any static host) but you want **only the API on Netlify**, the browser must call your Netlify origin explicitly. Same-origin `/api` on `www.yoursite.com` hits S3 and returns HTML — not the Netlify function.
+If the SPA is on **`www`** (CloudFront) and the API on **Netlify**, **prefer same-origin API URLs** (`/api/...` on `www`) and **proxy `/api/*` in CloudFront** to `https://voltz-supply.netlify.app`. That avoids **Content-Security-Policy** blocking cross-origin `fetch` to `*.netlify.app` (**Failed to fetch**). Step-by-step: **`CLOUDFRONT_API.md`**.
 
 **Pick one:**
 
 1. **Simplest — host the whole site on Netlify**  
-   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset. `netlify.toml` already rewrites `/api/*` to the serverless function.
+   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset and **`voltz-api-origin` meta empty**. `netlify.toml` rewrites `/api/*` to the serverless function.
 
-2. **Keep static frontend on CloudFront/S3** — point API calls at Netlify:
-   - In Netlify: note your site URL, e.g. `https://voltz-supply.netlify.app` (or the ***.netlify.app** URL from **Site settings → Domain management**).
-   - Either:
-     - Set **`VITE_API_URL`** to that URL (no trailing slash) in the environment where you **build** the SPA, then rebuild and upload `dist/` to S3, **or**
-     - Edit **`index.html`** in the built output and set  
-       `<meta name="voltz-api-origin" content="https://voltz-supply.netlify.app" />`  
-       (same URL; no rebuild needed if you only change the meta).
-   - Ensure **CloudFront** does not rewrite `/api/*` to `index.html` (see `cloudfront-function.js` in this repo).
-   - The API sends **`Access-Control-Allow-Origin: *`** so browsers can call it from any HTTPS origin.
-   - If the browser shows **“Failed to fetch”** (network error), check **Content-Security-Policy** on your main site: `connect-src` must include **`https://voltz-supply.netlify.app`** (and `https:` generally). A policy of only `'self'` blocks `fetch()` to Netlify. Adjust in CloudFront response headers or remove the restrictive `connect-src` for testing.
+2. **CloudFront + S3 SPA, API on Netlify (recommended for AWS)**  
+   Leave **`voltz-api-origin` empty** in `index.html`. Add a CloudFront **origin** (Netlify host) and a **behavior** for `/api/*` → that origin. See **`CLOUDFRONT_API.md`**. Do not rewrite `/api/*` to `index.html` in `cloudfront-function.js`.
 
-3. **Advanced** — CloudFront **second origin** for `/api/*` to Netlify (no `VITE_API_URL` needed if the viewer URL path is still `/api` on the same domain). Requires AWS behavior/origin configuration beyond this repo.
+3. **Cross-origin only if you relax CSP** — build with **`VITE_API_URL=https://voltz-supply.netlify.app`** or set **`votz-api-origin`** to that URL. Your page **`connect-src`** must allow that host, or the browser will block requests.
 
 4. **Product images (Blobs)**  
    Local files under `server/uploads/` are **not** deployed. After importing data or saving images locally, push binaries to Netlify Blobs **once** (per site):
