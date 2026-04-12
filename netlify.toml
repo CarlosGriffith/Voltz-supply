@@ -1,0 +1,41 @@
+# Full checklist: NETLIFY.md
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  included_files = ["scripts/aiven-ca.pem"]
+  external_node_modules = [
+    "express",
+    "mysql2",
+    "nodemailer",
+    "multer",
+    "serverless-http",
+    "@netlify/blobs",
+  ]
+
+# Express on Netlify: official /api rewrite + uploads proxied to the same function.
+# If /uploads/* 404s in production, check function logs; some accounts preserve the
+# original path on rewrite to `/.netlify/functions/api`.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/uploads/*"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+# SPA (React Router): after API/upload rules above
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
