@@ -1,5 +1,17 @@
 # Deploy on Netlify
 
+This project’s **API is a Netlify serverless function** (`netlify/functions/api.mjs`). The **Vite frontend** is built to `dist/` and served by Netlify; `netlify.toml` rewrites `/api/*` to that function.
+
+### Full stack on Netlify (most common)
+
+If **both** the SPA and the API are served from the **same Netlify site** (e.g. `voltz-supply.netlify.app` or your custom domain in Netlify):
+
+- Leave **`VITE_API_URL`** unset in Netlify environment variables.
+- Keep **`voltz-api-origin`** empty in `index.html` (default in this repo).
+- The browser calls **`/api/...` on the same host** — no cross-origin setup, no `CLOUDFRONT_API.md`.
+
+Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. S3 + CloudFront) while the API stays on Netlify.
+
 ## One-time setup
 
 1. **Create a site** from a Git repo (recommended), or upload a **zip of the project without `node_modules` and `dist`**—Netlify runs a clean install and build. If you drag the whole folder including `node_modules`, builds are slower and can hit size limits. Set environment variables in the Netlify UI either way.
@@ -32,7 +44,7 @@ If the SPA is on **`www`** (CloudFront) and the API on **Netlify**, **prefer sam
 2. **CloudFront + S3 SPA, API on Netlify (recommended for AWS)**  
    Leave **`voltz-api-origin` empty** in `index.html`. Add a CloudFront **origin** (Netlify host) and a **behavior** for `/api/*` → that origin. See **`CLOUDFRONT_API.md`**. Do not rewrite `/api/*` to `index.html` in `cloudfront-function.js`.
 
-3. **Cross-origin only if you relax CSP** — build with **`VITE_API_URL=https://voltz-supply.netlify.app`** or set **`votz-api-origin`** to that URL. Your page **`connect-src`** must allow that host, or the browser will block requests.
+3. **Cross-origin only if you relax CSP** — build with **`VITE_API_URL=https://voltz-supply.netlify.app`** or set **`voltz-api-origin`** to that URL. Your page **`connect-src`** must allow that host, or the browser will block requests.
 
 4. **Product images (Blobs)**  
    Local files under `server/uploads/` are **not** deployed. After importing data or saving images locally, push binaries to Netlify Blobs **once** (per site):
