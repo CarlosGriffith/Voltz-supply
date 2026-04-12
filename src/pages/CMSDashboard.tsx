@@ -14,6 +14,7 @@ import { printDocument, generateEmailHTML } from '@/components/pos/POSPrintTempl
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from '@/components/pos/quotationHtml';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 
+import { getApiHealthDb } from '@/lib/api';
 import { broadcastCMSUpdate } from '@/lib/cmsCache';
 import { fmtCurrency, fmtDatePOS, safeNum, DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS, formatSentEmailDocumentDisplay } from '@/lib/utils';
 
@@ -935,6 +936,21 @@ const CMSDashboardInner: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState('cash');
 
   const loadData = useCallback(async () => {
+    const health = await getApiHealthDb();
+    if (!health.reachable) {
+      notify({
+        variant: 'error',
+        title: 'API unreachable',
+        subtitle: health.error || 'Confirm the site can reach /api (Netlify function or local dev:api).',
+      });
+    } else if (!health.dbOk) {
+      notify({
+        variant: 'error',
+        title: 'Database unavailable',
+        subtitle: health.error || 'Set AIVEN_MYSQL_* in Netlify or .env and redeploy.',
+      });
+    }
+
     const [q, o, i, r, ref, c, qr, e, smtp] = await Promise.all([
       fetchQuotes(), fetchOrders(), fetchInvoices(), fetchReceipts(), fetchRefunds(),
       fetchCustomers(), fetchQuoteRequests(), fetchSentEmails(), fetchSmtpSettings(),
@@ -948,7 +964,7 @@ const CMSDashboardInner: React.FC = () => {
     setQuoteRequests(asPosRows<POSQuoteRequest>(qr));
     setSentEmails(asPosRows<POSSentEmail>(e));
     if (smtp) setSmtpSettings(smtp);
-  }, []);
+  }, [notify]);
 
   /** POS Checkout applies store credit server-side; refresh CRM customer rows so Store Credit column stays accurate. */
   const refreshCustomers = useCallback(async () => {

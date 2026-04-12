@@ -28,12 +28,13 @@ async function handleResponse(res: Response) {
     }
     throw new Error(msg);
   }
-  const ct = res.headers.get('content-type');
-  if (ct?.includes('application/json')) return res.json();
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('application/json') || ct.includes('+json')) return res.json();
   const text = await res.text();
-  if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
-      return JSON.parse(text);
+      return JSON.parse(trimmed);
     } catch {
       return null;
     }
@@ -43,7 +44,49 @@ async function handleResponse(res: Response) {
 
 /** Use when apiGet must yield a JSON array; null / non-array bodies become []. */
 export function ensureArray<T>(data: unknown): T[] {
-  return Array.isArray(data) ? (data as T[]) : [];
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    for (const k of ['data', 'rows', 'results', 'items']) {
+      const v = o[k];
+      if (Array.isArray(v)) return v as T[];
+    }
+  }
+  return [];
+}
+
+/** Lightweight check for CMS/POS bootstrap — does not throw. */
+export async function getApiHealthDb(): Promise<{
+  reachable: boolean;
+  dbOk: boolean;
+  error?: string;
+}> {
+  const base = import.meta.env.VITE_API_URL ?? '';
+  try {
+    const r = await fetch(`${base}/api/health?db=1`);
+    const j = (await r.json().catch(() => ({}))) as {
+      ok?: boolean;
+      db?: string;
+      error?: string;
+    };
+    const dbOk = r.ok && j.ok !== false && j.db === 'ok';
+    return {
+      reachable: true,
+      dbOk,
+      error:
+        typeof j.error === 'string' && j.error.trim()
+          ? j.error
+          : !dbOk
+            ? 'Database connection failed'
+            : undefined,
+    };
+  } catch (e) {
+    return {
+      reachable: false,
+      dbOk: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 }
 
 export async function apiGet<T = unknown>(path: string): Promise<T> {

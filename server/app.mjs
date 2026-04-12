@@ -32,6 +32,18 @@ export function createApp(options = {}) {
   const app = express();
 
   /**
+   * Netlify rewrites `/api/*` → this function, but the request path can arrive as
+   * `/.netlify/functions/api/...` so Express would not match `/api/...` routes.
+   * Normalize before any routing.
+   */
+  app.use((req, _res, next) => {
+    if (typeof req.url === 'string' && req.url.startsWith('/.netlify/functions/api')) {
+      req.url = req.url.replace(/^\/\.netlify\/functions\/api/, '/api') || '/';
+    }
+    next();
+  });
+
+  /**
    * MySQL DATETIME(3) rejects ISO-8601 values like `2026-04-11T23:06:23.906Z` (T/Z).
    * Normalize to UTC `YYYY-MM-DD HH:mm:ss.SSS` for bound parameters.
    * @param {string | null | undefined} v
