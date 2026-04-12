@@ -30,13 +30,17 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const base = getApiBaseUrl();
   const url = `${base}${path}`;
   try {
-    return await fetch(url, init);
+    return await fetch(url, {
+      ...init,
+      mode: 'cors',
+      credentials: 'omit',
+    });
   } catch (e) {
     if (e instanceof TypeError) {
       const hint =
         base === ''
           ? ' Start the API (npm run dev:api) and open the app from the Vite dev server (npm run dev on port 8000), or run npm run dev:full.'
-          : ' If you use VITE_API_URL / voltz-api-origin, its host must match CORS expectations, or leave them unset on Netlify so /api is same-origin.';
+          : ' Cross-origin: ensure the API (Netlify) allows CORS (redeploy server), and your site’s Content-Security-Policy includes connect-src https://voltz-supply.netlify.app (or remove CSP connect-src restrictions). Ad blockers can also block *.netlify.app.';
       throw new Error(`Cannot reach the server (${url}).${hint}`);
     }
     throw e;
@@ -90,7 +94,7 @@ export async function getApiHealthDb(): Promise<{
 }> {
   const base = getApiBaseUrl();
   try {
-    const r = await fetch(`${base}/api/health?db=1`);
+    const r = await fetch(`${base}/api/health?db=1`, { mode: 'cors', credentials: 'omit' });
     const text = await r.text();
     let j: {
       ok?: boolean;
@@ -127,10 +131,20 @@ export async function getApiHealthDb(): Promise<{
       error: !dbOk ? parts.join(' ') : undefined,
     };
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const isNetwork =
+      /failed to fetch|networkerror|load failed/i.test(msg) || e instanceof TypeError;
+    const crossOrigin = Boolean(base);
+    let detail = msg;
+    if (isNetwork && crossOrigin) {
+      detail = `${msg}. Likely causes: CSP on your page (add connect-src ${base} https:), CORS (redeploy after server update), mixed HTTP/HTTPS, or an ad blocker blocking netlify.app.`;
+    } else if (isNetwork && !crossOrigin) {
+      detail = `${msg}. Start the API (npm run dev:api) and use the Vite dev server, or open the app on Netlify.`;
+    }
     return {
       reachable: false,
       dbOk: false,
-      error: e instanceof Error ? e.message : String(e),
+      error: detail,
     };
   }
 }

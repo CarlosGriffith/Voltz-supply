@@ -118,7 +118,19 @@ export function createApp(options = {}) {
       )
     : 40 * 1024 * 1024;
 
-  app.use(cors({ origin: true }));
+  /**
+   * Public API: browsers on other origins (e.g. www.voltzsupply.com → voltz-supply.netlify.app)
+   * need explicit CORS. `origin: '*'` avoids reflection edge cases in serverless; no cookie auth on API.
+   */
+  app.use(
+    cors({
+      origin: '*',
+      methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+      maxAge: 86400,
+      optionsSuccessStatus: 204,
+    })
+  );
   app.use(express.json({ limit: '24mb' }));
 
   if (!useBlobs) {

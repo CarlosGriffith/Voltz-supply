@@ -37,7 +37,8 @@ If visitors load **HTML/JS from AWS** (or any static host) but you want **only t
        `<meta name="voltz-api-origin" content="https://voltz-supply.netlify.app" />`  
        (same URL; no rebuild needed if you only change the meta).
    - Ensure **CloudFront** does not rewrite `/api/*` to `index.html` (see `cloudfront-function.js` in this repo).
-   - The API already enables CORS (`Access-Control-Allow-Origin` reflects the request origin), so cross-origin calls from your marketing domain are allowed.
+   - The API sends **`Access-Control-Allow-Origin: *`** so browsers can call it from any HTTPS origin.
+   - If the browser shows **“Failed to fetch”** (network error), check **Content-Security-Policy** on your main site: `connect-src` must include **`https://voltz-supply.netlify.app`** (and `https:` generally). A policy of only `'self'` blocks `fetch()` to Netlify. Adjust in CloudFront response headers or remove the restrictive `connect-src` for testing.
 
 3. **Advanced** — CloudFront **second origin** for `/api/*` to Netlify (no `VITE_API_URL` needed if the viewer URL path is still `/api` on the same domain). Requires AWS behavior/origin configuration beyond this repo.
 
