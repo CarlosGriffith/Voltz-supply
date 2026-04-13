@@ -999,7 +999,7 @@ function friendlySmtpSendError(err) {
   const code = err?.code;
 
   if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || /timeout|timed out|Connection timeout/i.test(raw)) {
-    return `${raw} — Outbound SMTP never connected. Try port 465 (SSL) or 587 (STARTTLS). On Render the server already prefers IPv4 for SMTP; confirm host/port and that your provider allows cloud IPs (SES: production access, not sandbox). Gmail often blocks datacenter SMTP — use SES/SendGrid/SMTP2GO or a relay.`;
+    return `${raw} — SMTP from the server never connected. Fix host/port/provider, or bypass SMTP: set EMAIL_TRANSPORT=resend and RESEND_API_KEY on the API (HTTPS; see RENDER.md).`;
   }
   if (code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(raw)) {
     return `${raw} — Connection refused: wrong host/port, or the provider blocks this source network.`;
@@ -1016,6 +1016,52 @@ function friendlySmtpSendError(err) {
   return raw;
 }
 
+/** HTTPS API — no outbound SMTP port; works well from Render when SMTP times out. */
+function isResendTransportEnabled() {
+  return (
+    String(process.env.EMAIL_TRANSPORT || '').toLowerCase() === 'resend' &&
+    String(process.env.RESEND_API_KEY || '').trim() !== ''
+  );
+}
+
+async function sendViaResendApi({ smtp, to, subject, htmlBody, attachments }) {
+  const key = String(process.env.RESEND_API_KEY || '').trim();
+  const fromAddr = String(smtp.from_email || '').trim();
+  if (!fromAddr) throw new Error('From email is required');
+  const from = smtp.from_name ? `"${smtp.from_name}" <${fromAddr}>` : fromAddr;
+  const payload = {
+    from,
+    to: [to],
+    subject: subject || '',
+    html: htmlBody || '',
+  };
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    payload.attachments = attachments.map((a) => ({
+      filename: String(a.filename || 'document.pdf'),
+      content: String(a.contentBase64 || ''),
+    }));
+  }
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const text = await r.text();
+  if (!r.ok) {
+    let msg = text;
+    try {
+      const j = JSON.parse(text);
+      if (j?.message) msg = j.message;
+    } catch {
+      /* raw */
+    }
+    throw new Error(msg || `Resend HTTP ${r.status}`);
+  }
+}
+
 app.post('/api/pos/email/send', async (req, res) => {
   try {
     const { to, toName, subject, htmlBody, smtp: smtpBody, attachments } = req.body || {};
@@ -1030,7 +1076,9 @@ app.post('/api/pos/email/send', async (req, res) => {
     }
     if (!smtp?.host) {
       const [[row]] = await pool.query('SELECT * FROM pos_smtp_settings WHERE id = ?', ['default']);
-      if (!row?.host) return res.status(400).json({ error: 'SMTP not configured' });
+      if (!row) return res.status(400).json({ error: 'SMTP not configured' });
+      const allowNoHost = isResendTransportEnabled() && String(row.from_email || '').trim() !== '';
+      if (!row.host && !allowNoHost) return res.status(400).json({ error: 'SMTP not configured' });
       smtp = normalizeSmtpPayload({
         host: row.host,
         port: row.port,
@@ -1040,6 +1088,15 @@ app.post('/api/pos/email/send', async (req, res) => {
         from_name: row.from_name || '',
         use_tls: row.use_tls !== 0,
       });
+    }
+
+    if (isResendTransportEnabled() && String(smtp.from_email || '').trim()) {
+      await sendViaResendApi({ smtp, to, subject, htmlBody, attachments });
+      return res.json({ success: true });
+    }
+
+    if (!String(smtp.host || '').trim()) {
+      return res.status(400).json({ error: 'SMTP host required (or enable Resend: EMAIL_TRANSPORT=resend + RESEND_API_KEY)' });
     }
 
     const port = Number(smtp.port) || 587;

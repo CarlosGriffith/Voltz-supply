@@ -28,15 +28,25 @@ Set the same database variables you used on Netlify (see `.env.example`):
 
 Render injects **`PORT`** and **`RENDER`** automatically — do not set `PORT` yourself.
 
-### Email (SMTP from POS / CMS)
+### Email (POS / CMS)
 
-Outbound mail uses **nodemailer** to your SMTP host (AWS SES, SendGrid, etc.). If **Send Test** shows **connection timeout**:
+**Option A — Resend (recommended if SMTP times out)**  
+Uses **HTTPS** only (no outbound SMTP from Render). [Resend](https://resend.com/) signup → API key → verify your domain / sender.
 
-- The API sets **IPv4-first DNS** and uses **IPv4 sockets** on Render by default (many SMTP timeouts are broken IPv6). Set **`SMTP_USE_IPV6=1`** only if you must force IPv6.
-- Try **port 465** (implicit TLS) vs **587** (STARTTLS), and match **Use TLS** to your provider’s docs.
-- Optional: **`SMTP_FORCE_IPV4=1`** (redundant on Render unless you disabled the default), **`SMTP_CONNECTION_TIMEOUT_MS`**, **`SMTP_SOCKET_TIMEOUT_MS`**.
-- **Gmail** SMTP often blocks cloud hosts; prefer **AWS SES**, **SendGrid**, **SMTP2GO**, etc.
-- Ensure your provider allows connections from **cloud** IPs (SES: move out of sandbox; verify sender domain).
+On the Render service set:
+
+- **`EMAIL_TRANSPORT`** = `resend`
+- **`RESEND_API_KEY`** = `re_...`
+
+In **Email Configuration**, set **From email** (and name) to an address/domain allowed in Resend. **SMTP host** can be left unset once saved **From** is stored — or keep any placeholder; sending uses Resend, not those fields.
+
+**Option B — SMTP (nodemailer)**  
+If **Send Test** shows **connection timeout**:
+
+- The API sets **IPv4-first DNS** and **IPv4 sockets** on Render by default. Set **`SMTP_USE_IPV6=1`** only if you need IPv6.
+- Try **port 465** vs **587**, and match **Use TLS** to your provider.
+- Optional: **`SMTP_CONNECTION_TIMEOUT_MS`**, **`SMTP_SOCKET_TIMEOUT_MS`**.
+- **Gmail** often blocks cloud SMTP; prefer **SES**, **SendGrid**, **SMTP2GO**, or use **Option A**.
 
 ## 3. Point the frontend at Render
 
