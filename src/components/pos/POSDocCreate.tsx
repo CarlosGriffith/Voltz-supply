@@ -544,6 +544,21 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
     return invoiceIsFullyPaid(inv);
   }, [type, editDoc, invoices]);
 
+  /** Review page: invoice that already has payment on file (partial or full before further edits). */
+  const reviewInvoiceForPriorPaymentLine = useMemo(() => {
+    if (!editDoc) return null;
+    const eps = 0.005;
+    if (type === 'invoice') {
+      const inv = editDoc as POSInvoice;
+      return safeNum(inv.amount_paid) > eps ? inv : null;
+    }
+    const invId =
+      type === 'quote' ? (editDoc as POSQuote).invoice_id : (editDoc as POSOrder).invoice_id;
+    if (!invId) return null;
+    const inv = invoices.find((i) => String(i.id) === String(invId));
+    return inv && safeNum(inv.amount_paid) > eps ? inv : null;
+  }, [editDoc, type, invoices]);
+
   const currentFormSnapshot = useMemo(
     () =>
       buildReviewFormSnapshot({
@@ -1151,6 +1166,19 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                     className={`w-20 text-right text-sm border border-gray-200 rounded-md py-1 px-2 ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
                   />
                 </div>
+                {isReviewPage && reviewInvoiceForPriorPaymentLine ? (
+                  <div className="flex justify-between text-sm gap-2">
+                    <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                      <span>Payments Already Received</span>
+                      <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
+                        ({reviewInvoiceForPriorPaymentLine.invoice_number})
+                      </span>
+                    </span>
+                    <span className="font-semibold tabular-nums text-gray-700">
+                      (${fmtCurrency(safeNum(reviewInvoiceForPriorPaymentLine.amount_paid))})
+                    </span>
+                  </div>
+                ) : null}
                 <div className="flex justify-between text-lg font-bold border-t border-gray-200 pt-2 mt-2">
                   <span className="text-[#1a2332]">Total</span><span className="text-[#1a2332]">${fmtCurrency(total)}</span>
                 </div>

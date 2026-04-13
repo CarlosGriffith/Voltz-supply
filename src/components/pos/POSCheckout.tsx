@@ -678,6 +678,53 @@ function collectInvoicesWithPriorPaymentFromCheckoutLines(
   return list;
 }
 
+const PRIOR_PAYMENT_LINE_EPS = 0.005;
+
+/** Linked invoice for this stream that already has payment on file (for per-stream “Payments Already Received” on multi-stream checkout). */
+function invoiceWithPriorPaymentForStream(
+  spec: CheckoutStreamSpec,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): POSInvoice | null {
+  const k = spec.key;
+  if (k === 'direct') return null;
+  let inv: POSInvoice | undefined;
+  if (k.startsWith('invoice:')) {
+    inv = invoices.find((x) => String(x.id) === k.slice(8));
+  } else if (k.startsWith('quote:')) {
+    const q = quotes.find((x) => String(x.id) === k.slice(6));
+    if (q?.invoice_id) inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
+  } else if (k.startsWith('order:')) {
+    const o = orders.find((x) => String(x.id) === k.slice(6));
+    if (o?.invoice_id) inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
+  }
+  if (!inv || num(inv.amount_paid) <= PRIOR_PAYMENT_LINE_EPS) return null;
+  return inv;
+}
+
+function streamReviewHeading(
+  spec: CheckoutStreamSpec,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): string {
+  if (spec.key === 'direct') return 'New items';
+  if (spec.key.startsWith('quote:')) {
+    const q = quotes.find((x) => String(x.id) === spec.key.slice(6));
+    return q ? `Quote ${q.quote_number}` : 'Quote';
+  }
+  if (spec.key.startsWith('order:')) {
+    const o = orders.find((x) => String(x.id) === spec.key.slice(6));
+    return o ? `Order ${o.order_number}` : 'Order';
+  }
+  if (spec.key.startsWith('invoice:')) {
+    const inv = invoices.find((x) => String(x.id) === spec.key.slice(8));
+    return inv ? `Invoice ${inv.invoice_number}` : 'Invoice';
+  }
+  return 'Items';
+}
+
 function mergeStreamLineGroup(pieces: CheckoutLineItem[]): CheckoutLineItem[] {
   if (pieces.length === 0) return [];
   return pieces.reduce((acc, li) => mergeCheckoutLineItems(acc, [li]), [] as CheckoutLineItem[]);
@@ -1810,6 +1857,18 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
     () => collectInvoicesWithPriorPaymentFromCheckoutLines(lineItems, quotes, orders, invoices),
     [lineItems, quotes, orders, invoices]
   );
+  /** Oldest-first streams (quote/order/invoice/direct) for multi-document carts — used for per-stream prior payment lines. */
+  const checkoutStreamsSorted = useMemo(
+    () =>
+      sortCheckoutStreamSpecsOldestFirst(
+        buildCheckoutStreamSpecs(lineItems, quotes, orders, invoices),
+        quotes,
+        orders,
+        invoices
+      ),
+    [lineItems, quotes, orders, invoices]
+  );
+  const showPerStreamPriorPaymentRows = checkoutStreamsSorted.length > 1;
   /** Sum of amounts shown on “Payments Already Received” — subtracted from items summary with discount. */
   const priorPaymentsSubtractSum = useMemo(
     () => invoicesWithPriorPaymentInCart.reduce((s, i) => s + num(i.amount_paid), 0),
@@ -3215,6 +3274,10 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                 </div>
               </div>
             </div>
+            <p className="px-4 py-2 text-[11px] text-gray-500 leading-snug border-b border-gray-100 bg-gray-50/60">
+              Adding quotes, orders, or invoices from search only links them to this checkout so you can pay more than one
+              document in a single transaction — it does not change each document&apos;s balance until you complete payment.
+            </p>
             <div className="bg-[#1a2332] text-white px-4 py-2">
               <PanelGroup
                 direction="horizontal"
@@ -3470,23 +3533,46 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                 <span className="text-gray-500">GCT</span>
                 <span className="font-semibold">{fmtMoney(taxAmount)}</span>
               </div>
-              {invoicesWithPriorPaymentInCart.length > 0 && (
-                <div className="flex justify-between text-sm gap-2">
-                  <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
-                    <span>Payments Already Received</span>
-                    {meaningfulCheckoutDocNoCount > 1 ? (
-                      <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
-                        ({invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})
+              {showPerStreamPriorPaymentRows
+                ? checkoutStreamsSorted.map((spec) => {
+                    const inv = invoiceWithPriorPaymentForStream(spec, quotes, orders, invoices);
+                    if (!inv) return null;
+                    return (
+                      <div key={spec.key} className="space-y-1">
+                        <p className="text-[11px] font-semibold text-[#1a2332]">
+                          {streamReviewHeading(spec, quotes, orders, invoices)}
+                        </p>
+                        <div className="flex justify-between text-sm gap-2">
+                          <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                            <span>Payments Already Received</span>
+                            <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
+                              ({inv.invoice_number})
+                            </span>
+                          </span>
+                          <span className="font-semibold tabular-nums text-gray-700">
+                            ({fmtMoney(num(inv.amount_paid))})
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                : invoicesWithPriorPaymentInCart.length > 0 && (
+                    <div className="flex justify-between text-sm gap-2">
+                      <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                        <span>Payments Already Received</span>
+                        {meaningfulCheckoutDocNoCount > 1 ? (
+                          <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
+                            ({invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})
+                          </span>
+                        ) : null}
                       </span>
-                    ) : null}
-                  </span>
-                  <span className="font-semibold tabular-nums text-gray-700">
-                    (
-                    {invoicesWithPriorPaymentInCart.map((i) => fmtMoney(num(i.amount_paid))).join(' · ')}
-                    )
-                  </span>
-                </div>
-              )}
+                      <span className="font-semibold tabular-nums text-gray-700">
+                        (
+                        {invoicesWithPriorPaymentInCart.map((i) => fmtMoney(num(i.amount_paid))).join(' · ')}
+                        )
+                      </span>
+                    </div>
+                  )}
               <div className="flex items-center justify-between text-sm gap-2 flex-wrap">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-gray-500 shrink-0">Discount</span>
