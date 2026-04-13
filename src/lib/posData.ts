@@ -1072,9 +1072,25 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
   return out;
 }
 
+function coerceReceiptInvoiceLinksInput(raw: unknown): unknown {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t) return [];
+    try {
+      const p = JSON.parse(t);
+      return p;
+    } catch {
+      return [];
+    }
+  }
+  return raw;
+}
+
 function normalizeReceiptInvoiceLinks(raw: unknown): POSReceiptInvoiceLink[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
+  const input = coerceReceiptInvoiceLinksInput(raw);
+  if (!Array.isArray(input)) return [];
+  return input
     .map((l) => {
       const row = l && typeof l === 'object' ? (l as Record<string, unknown>) : {};
       const inv = row.invoice_id != null ? String(row.invoice_id).trim() : '';

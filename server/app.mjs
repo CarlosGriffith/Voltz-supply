@@ -416,23 +416,29 @@ app.get('/api/pos/receipts', async (_req, res) => {
     const [rows] = await pool.query('SELECT * FROM pos_receipts ORDER BY created_at DESC');
     if (!rows?.length) return res.json([]);
     const ids = rows.map((r) => r.id);
-    const [linkRows] = await pool.query(
-      'SELECT receipt_id, invoice_id, amount_applied FROM pos_receipt_invoice_links WHERE receipt_id IN (?)',
-      [ids]
-    );
+    let linkRows = [];
+    if (ids.length > 0) {
+      const ph = ids.map(() => '?').join(',');
+      const [lr] = await pool.query(
+        `SELECT receipt_id, invoice_id, amount_applied FROM pos_receipt_invoice_links WHERE receipt_id IN (${ph})`,
+        ids
+      );
+      linkRows = lr || [];
+    }
     const byReceipt = new Map();
-    for (const l of linkRows || []) {
-      const rid = l.receipt_id;
+    for (const l of linkRows) {
+      const rid = String(l.receipt_id ?? '');
+      if (!rid) continue;
       if (!byReceipt.has(rid)) byReceipt.set(rid, []);
       byReceipt.get(rid).push({
-        invoice_id: l.invoice_id,
+        invoice_id: String(l.invoice_id ?? '').trim(),
         amount_applied: Number(l.amount_applied) || 0,
       });
     }
     res.json(
       rows.map((r) => ({
         ...r,
-        invoice_links: byReceipt.get(r.id) ?? [],
+        invoice_links: byReceipt.get(String(r.id ?? '')) ?? [],
       }))
     );
   } catch (e) {
