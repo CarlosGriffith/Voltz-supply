@@ -858,16 +858,6 @@ function streamOutstandingWaterfallCap(
   return dtot;
 }
 
-/** Multi-stream checkout paying down existing open invoices: only bump amount_paid — do not rewrite lines/totals from cart. */
-function shouldPaymentOnlyPreserveInvoice(
-  spec: CheckoutStreamSpec,
-  quotes: POSQuote[],
-  orders: POSOrder[],
-  invoices: POSInvoice[]
-): boolean {
-  return streamRemainingBalanceIfOpenInvoice(spec, quotes, orders, invoices) != null;
-}
-
 function splitProportionally(total: number, weights: number[]): number[] {
   if (weights.length === 0) return [];
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -1302,11 +1292,6 @@ type PersistCtx = {
   quotes: POSQuote[];
   orders: POSOrder[];
   invoices: POSInvoice[];
-  /**
-   * When true (multi-invoice payment sessions): only add to amount_paid on the saved invoice row — do not overwrite
-   * items/subtotal/tax/discount/total from cart lines (cart is for allocation only).
-   */
-  paymentOnly?: boolean;
 };
 
 /** Single persistence path: new cart vs quote vs order vs invoice — all produce an invoice row when successful. */
@@ -1328,7 +1313,6 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
     quotes,
     orders,
     invoices,
-    paymentOnly = false,
   } = ctx;
   /** MySQL DECIMAL / JSON often yields strings — never use `+` with raw values (concat bugs e.g. 401 + "350" → "401350"). */
   const alloc = num(allocationThisCheckout);
@@ -1556,85 +1540,29 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
   if (!entry) throw new Error('Invoice not found — open checkout again from the invoice');
   const prevPaid = num(entry.amount_paid);
   const newPaid = prevPaid + alloc;
-  const invTotal = paymentOnly ? num(entry.total) : docTotal;
+  /** Always use the invoice row’s stored fiscal total — never replace `total` from cart `documentTotal` (avoids one invoice absorbing combined-cart math in multi-invoice checkout). */
+  const invTotal = num(entry.total);
   const invoiceStatus =
     newPaid <= 0 ? INVOICE_STATUS_UNPAID : newPaid >= invTotal ? INVOICE_STATUS_PAID : INVOICE_STATUS_PARTIALLY_PAID;
-  const linkedDocStatus =
-    newPaid >= invTotal
-      ? 'invoice_generated_paid'
-      : newPaid > 0
-        ? 'invoice_generated_partially_paid'
-        : 'invoice_generated_unpaid';
-
-  if (paymentOnly) {
-    invoice = await saveInvoice(
-      {
-        ...entry,
-        subtotal: num(entry.subtotal),
-        tax_rate: num(entry.tax_rate),
-        tax_amount: num(entry.tax_amount),
-        discount_amount: num(entry.discount_amount),
-        total: num(entry.total),
-        customer_id: customerId ?? entry.customer_id,
-        customer_name: customerName,
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-        amount_paid: newPaid,
-        status: invoiceStatus,
-      },
-      { syncLinked: false }
-    );
-    orderId = entry.order_id ?? undefined;
-    return { invoice, orderId };
-  }
 
   invoice = await saveInvoice(
     {
       ...entry,
-      customer_id: customerId,
+      subtotal: num(entry.subtotal),
+      tax_rate: num(entry.tax_rate),
+      tax_amount: num(entry.tax_amount),
+      discount_amount: num(entry.discount_amount),
+      total: num(entry.total),
+      customer_id: customerId ?? entry.customer_id,
       customer_name: customerName,
       customer_email: customerEmail,
       customer_phone: customerPhone,
-      items: itemsPayload,
-      subtotal: sub,
-      tax_rate: taxR,
-      tax_amount: taxAmt,
-      discount_amount: discAmt,
-      total: docTotal,
       amount_paid: newPaid,
       status: invoiceStatus,
     },
     { syncLinked: false }
   );
-  if (!entry.order_id) {
-    const ordNo = await generateDocNumber('order');
-    const order = await saveOrder(
-      {
-        order_number: ordNo,
-        customer_id: customerId,
-        customer_name: customerName,
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-        customer_type: customerId ? 'registered' : 'visitor',
-        items: itemsPayload,
-        subtotal: sub,
-        tax_rate: taxR,
-        tax_amount: taxAmt,
-        discount_amount: discAmt,
-        total: docTotal,
-        invoice_id: entry.id,
-        status: linkedDocStatus,
-        notes: entry.notes,
-      },
-      { syncLinked: false }
-    );
-    orderId = order?.id;
-    if (order?.id && invoice) {
-      invoice = await saveInvoice({ ...invoice, order_id: order.id }, { syncLinked: false });
-    }
-  } else {
-    orderId = entry.order_id;
-  }
+  orderId = entry.order_id ?? undefined;
   return { invoice, orderId };
 }
 
@@ -2436,8 +2364,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           for (let i = 0; i < specsOrdered.length; i++) {
             const sp = specsOrdered[i];
             const f = fiscals[i];
-            const paymentOnly =
-              specsOrdered.length > 1 && shouldPaymentOnlyPreserveInvoice(sp, quotes, orders, invoicesForPersist);
             const r = await persistCheckoutDocuments({
               source: sp.source,
               itemsPayload: lineItemsForPersistence(sp.lines),
@@ -2455,7 +2381,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               quotes,
               orders,
               invoices: invoicesForPersist,
-              paymentOnly,
             });
             if (r.invoice?.id) {
               const saved = r.invoice;
