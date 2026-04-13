@@ -32,10 +32,11 @@ Render injects **`PORT`** and **`RENDER`** automatically — do not set `PORT` y
 
 Outbound mail uses **nodemailer** to your SMTP host (AWS SES, SendGrid, etc.). If **Send Test** shows **connection timeout**:
 
+- The API sets **IPv4-first DNS** and uses **IPv4 sockets** on Render by default (many SMTP timeouts are broken IPv6). Set **`SMTP_USE_IPV6=1`** only if you must force IPv6.
 - Try **port 465** (implicit TLS) vs **587** (STARTTLS), and match **Use TLS** to your provider’s docs.
-- Some providers need **IPv4**: add environment variable **`SMTP_FORCE_IPV4=1`** on the Render service.
-- Optional: **`SMTP_CONNECTION_TIMEOUT_MS`** (default 45000), **`SMTP_SOCKET_TIMEOUT_MS`** (default 60000).
-- Ensure your provider allows connections from **cloud** IPs (SES sandbox, SendGrid allowlist, etc.).
+- Optional: **`SMTP_FORCE_IPV4=1`** (redundant on Render unless you disabled the default), **`SMTP_CONNECTION_TIMEOUT_MS`**, **`SMTP_SOCKET_TIMEOUT_MS`**.
+- **Gmail** SMTP often blocks cloud hosts; prefer **AWS SES**, **SendGrid**, **SMTP2GO**, etc.
+- Ensure your provider allows connections from **cloud** IPs (SES: move out of sandbox; verify sender domain).
 
 ## 3. Point the frontend at Render
 

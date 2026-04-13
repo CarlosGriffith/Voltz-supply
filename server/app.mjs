@@ -1,5 +1,11 @@
 import cors from 'cors';
+import { setDefaultResultOrder } from 'node:dns';
 import dns from 'node:dns/promises';
+
+/** Prefer A records over AAAA — many SMTP hosts have broken IPv6; Render → Gmail/SES often times out without this. */
+if (typeof setDefaultResultOrder === 'function') {
+  setDefaultResultOrder('ipv4first');
+}
 import { Resolver } from 'node:dns/promises';
 import express from 'express';
 import multer from 'multer';
@@ -993,7 +999,7 @@ function friendlySmtpSendError(err) {
   const code = err?.code;
 
   if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || /timeout|timed out|Connection timeout/i.test(raw)) {
-    return `${raw} — Outbound SMTP never connected. Try port 465 with SSL (secure) vs 587 with STARTTLS; confirm host name and firewall. Cloud APIs (e.g. Render) must reach your provider: allow SMTP from their IPs or use a transactional host (SMTP2GO, SendGrid). If it still times out, set env SMTP_FORCE_IPV4=1 on the API service (IPv6 routing).`;
+    return `${raw} — Outbound SMTP never connected. Try port 465 (SSL) or 587 (STARTTLS). On Render the server already prefers IPv4 for SMTP; confirm host/port and that your provider allows cloud IPs (SES: production access, not sandbox). Gmail often blocks datacenter SMTP — use SES/SendGrid/SMTP2GO or a relay.`;
   }
   if (code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(raw)) {
     return `${raw} — Connection refused: wrong host/port, or the provider blocks this source network.`;
@@ -1056,7 +1062,11 @@ app.post('/api/pos/email/send', async (req, res) => {
         servername: String(smtp.host).trim(),
       },
     };
-    if (process.env.SMTP_FORCE_IPV4 === '1' || process.env.SMTP_FORCE_IPV4 === 'true') {
+    const forceIpv4Socket =
+      process.env.SMTP_FORCE_IPV4 === '1' ||
+      process.env.SMTP_FORCE_IPV4 === 'true' ||
+      (Boolean(process.env.RENDER) && process.env.SMTP_USE_IPV6 !== '1' && process.env.SMTP_USE_IPV6 !== 'true');
+    if (forceIpv4Socket) {
       transportOpts.family = 4;
     }
 
