@@ -275,7 +275,7 @@ const TableHeader = React.forwardRef<
       ref={ref}
       className={cn(
         v === "pos"
-          ? ["bg-[#F3F4F6]", "[&_tr]:border-b [&_tr]:border-gray-200"]
+          ? ["bg-[#F0F3F9]", "[&_tr]:border-b [&_tr]:border-gray-200"]
           : [
               "bg-gradient-to-b from-gray-50 via-gray-50 to-gray-100/90",
               "[&_tr]:border-b [&_tr]:border-gray-200/80",
@@ -373,7 +373,7 @@ const TableHead = React.forwardRef<
               "relative h-auto whitespace-nowrap px-3 py-2.5 text-left align-middle",
               "text-xs font-medium text-gray-600",
               "first:pl-4 last:pr-4",
-              "bg-[#F3F4F6] hover:bg-[#F3F4F6]",
+              "bg-[#F0F3F9] hover:bg-[#F0F3F9]",
               showResize && "pr-2",
               headerDividers &&
                 "after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[''] last:after:hidden [&:has([role=checkbox])]:after:hidden",
