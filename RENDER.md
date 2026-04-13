@@ -45,7 +45,10 @@ The built Vite app must know the API **origin** (no path prefix: the client call
 
 ## 4. CORS and CSP
 
-The API already allows **`origin: *`** in `server/app.mjs`. Your **marketing site** Content-Security-Policy must allow **`connect-src`** to your Render hostname (e.g. `https://your-service.onrender.com`), or the browser will block `fetch` (**Failed to fetch**).
+The API already allows **`origin: *`** in `server/app.mjs`. Your **marketing site** Content-Security-Policy must allow:
+
+- **`connect-src`** — API `fetch` / XHR to your Render hostname (or **Failed to fetch**).
+- **`img-src`** — product and upload images load from `https://your-service.onrender.com/uploads/...` (the app resolves `/uploads/...` to the API origin in `src/lib/mediaUrl.ts`). Include that origin in **`img-src`** or images will not appear.
 
 ## 5. Uploads and disk
 

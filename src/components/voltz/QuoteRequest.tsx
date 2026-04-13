@@ -8,6 +8,7 @@ import { fetchCustomProducts, fetchProductOverrides } from '@/lib/cmsData';
 import { Product } from '@/data/products';
 import { saveQuoteRequest } from '@/lib/posData';
 import { digitsFromPhoneInput, formatPhoneUsMask } from '@/lib/utils';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 
 interface QuoteRequestProps {
   isModal?: boolean;
@@ -274,7 +275,7 @@ const ProductAutocomplete: React.FC<ProductAutocompleteProps> = ({
                 >
                   {product.image ? (
                     <img
-                      src={product.image}
+                      src={resolveMediaUrl(product.image)}
                       alt=""
                       className="w-10 h-10 rounded-lg object-cover border border-gray-100 bg-white flex-shrink-0 mt-0.5"
                       loading="lazy"

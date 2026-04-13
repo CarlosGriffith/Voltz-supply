@@ -169,7 +169,7 @@ app.get('/api/health', async (req, res) => {
         service: 'voltz-api',
         db: 'error',
         error:
-          'AIVEN_MYSQL_PASSWORD is not set. Add it under Site configuration → Environment variables on Netlify (or .env locally), then redeploy.',
+          'AIVEN_MYSQL_PASSWORD is not set. Add it in the Render Web Service → Environment (or .env for local dev:api), then redeploy/restart.',
         code: 'ENV_MISSING_PASSWORD',
       });
     }
@@ -185,9 +185,9 @@ app.get('/api/health', async (req, res) => {
         code === 'ECONNREFUSED'
           ? ' Check AIVEN_MYSQL_HOST and AIVEN_MYSQL_PORT (Aiven uses a custom port, not 3306).'
           : code === 'ETIMEDOUT' || code === 'ENOTFOUND'
-            ? ' Check AIVEN_MYSQL_HOST and network access from Netlify to your DB.'
+            ? ' Check AIVEN_MYSQL_HOST and that your API host (e.g. Render) can reach the DB (Aiven IP allowlist / VPC).'
             : /certificate|SSL|TLS|self signed/i.test(base)
-              ? ' Ensure scripts/aiven-ca.pem is deployed or set AIVEN_MYSQL_SSL_CA to the Aiven CA PEM in Netlify.'
+              ? ' Ensure scripts/aiven-ca.pem is in the deploy or set AIVEN_MYSQL_SSL_CA in the API environment (Render).'
               : '';
       return res.status(503).json({
         ok: false,

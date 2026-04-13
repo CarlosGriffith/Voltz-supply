@@ -14,6 +14,7 @@ import QuoteRequest from './voltz/QuoteRequest';
 import Footer from './voltz/Footer';
 import ScrollToTop from './voltz/ScrollToTop';
 import ImageSlideshow from './voltz/ImageSlideshow';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 import { useLiveSections, useLiveCMSSettings, useLiveContactDetails, useLiveSpecialOfferProducts } from '@/hooks/useLiveCMSData';
 import { ChevronDown, ChevronUp, HelpCircle, Phone, Flame, Tag, X, Package, Star, CheckCircle, AlertCircle, Shield, Clock, Info, FileText, Download, ZoomIn } from 'lucide-react';
 import { Product } from '@/data/products';
@@ -146,7 +147,7 @@ const SpecialOfferDetailModal: React.FC<{
                 {selectedImage ? (
                   <>
                     <img
-                      src={selectedImage}
+                      src={resolveMediaUrl(selectedImage)}
                       alt={product.name}
                       className="w-full h-full object-contain p-4 transition-transform group-hover/img:scale-105"
                       onError={(e) => {
@@ -186,7 +187,7 @@ const SpecialOfferDetailModal: React.FC<{
                   {allImages.map((img, idx) => (
                     <button key={idx} onClick={() => setSelectedImage(img)}
                       className={`w-16 h-16 flex-shrink-0 rounded-lg border-2 overflow-hidden bg-white transition-all ${selectedImage === img ? 'border-[#e31e24] shadow-md' : 'border-gray-200 hover:border-gray-300'}`}>
-                      <img src={img} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
+                      <img src={resolveMediaUrl(img)} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
                     </button>
                   ))}
                 </div>
@@ -296,7 +297,7 @@ const SpecialOfferDetailModal: React.FC<{
                 <div className="space-y-3">
                   {product.documents && product.documents.length > 0 ? (
                     product.documents.map((doc, i) => (
-                      <a key={i} href={doc.url} target="_blank" rel="noopener noreferrer"
+                      <a key={i} href={resolveMediaUrl(doc.url)} target="_blank" rel="noopener noreferrer"
                         className="w-full flex items-center gap-4 p-4 rounded-xl border border-gray-200 hover:border-[#e31e24]/30 hover:bg-red-50/30 transition-all text-left group">
                         <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0"><FileText className="w-5 h-5 text-[#e31e24]" /></div>
                         <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-[#1a2332] truncate">{doc.name || 'Document'}</p><p className="text-xs text-gray-400">{[doc.type, doc.size].filter(Boolean).join(' — ') || 'Download'}</p></div>
@@ -419,7 +420,7 @@ const SpecialOffersSection: React.FC<{
                 >
                   {product.image && (
                     <div className="w-full h-40 rounded-xl overflow-hidden mb-4 bg-white/10">
-                      <img src={product.image} alt={product.name} className="w-full h-full object-contain" />
+                      <img src={resolveMediaUrl(product.image)} alt={product.name} className="w-full h-full object-contain" />
                     </div>
                   )}
                   <div className="flex items-center justify-between mb-3">

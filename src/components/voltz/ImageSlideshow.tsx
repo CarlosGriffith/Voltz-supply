@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 
 interface ImageSlideshowProps {
   images: string[];
@@ -312,7 +313,7 @@ const ImageSlideshow: React.FC<ImageSlideshowProps> = ({ images, startIndex = 0,
         >
           <img
             key={currentIndex}
-            src={images[currentIndex]}
+            src={resolveMediaUrl(images[currentIndex])}
             alt={`${alt} - Image ${currentIndex + 1}`}
             className="max-w-full max-h-full object-contain rounded-lg select-none animate-in fade-in duration-200"
             draggable={false}
@@ -356,7 +357,7 @@ const ImageSlideshow: React.FC<ImageSlideshowProps> = ({ images, startIndex = 0,
                 }`}
               >
                 <img
-                  src={img}
+                  src={resolveMediaUrl(img)}
                   alt={`Thumbnail ${idx + 1}`}
                   className="w-full h-full object-contain bg-white/10 p-0.5"
                   draggable={false}

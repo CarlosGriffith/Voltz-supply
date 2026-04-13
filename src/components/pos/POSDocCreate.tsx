@@ -14,6 +14,7 @@ import {
   gctPercentForCalculation,
   taxAmountFromSubtotalAndGctPercent,
 } from '@/lib/utils';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 
 import { fetchCustomProducts, fetchProductOverrides, fetchConfig } from '@/lib/cmsData';
 import { Product } from '@/data/products';
@@ -871,7 +872,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                 {searchResults.map(p => (
                   <button key={p.id} onClick={() => { setSelectedProduct(p); addItem(p); }}
                     className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-gray-50 border-b border-gray-50 last:border-0">
-                    {p.image ? <img src={p.image} alt="" className="w-12 h-12 rounded-lg object-cover border" /> :
+                    {p.image ? <img src={resolveMediaUrl(p.image)} alt="" className="w-12 h-12 rounded-lg object-cover border" /> :
                       <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center"><Package className="w-5 h-5 text-gray-400" /></div>}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-[#1a2332] truncate">{p.name}</p>
@@ -909,7 +910,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             ) : items.map((item, idx) => (
               <div key={idx} className="px-4 py-3 grid grid-cols-12 gap-2 items-center border-b border-gray-100 last:border-0">
                 <div className="col-span-5 flex items-center gap-3">
-                  {item.product_image ? <img src={item.product_image} alt="" className="w-10 h-10 rounded-lg object-cover border" /> :
+                  {item.product_image ? <img src={resolveMediaUrl(item.product_image)} alt="" className="w-10 h-10 rounded-lg object-cover border" /> :
                     <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center"><Package className="w-4 h-4 text-gray-400" /></div>}
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-[#1a2332] truncate">{item.product_name}</p>

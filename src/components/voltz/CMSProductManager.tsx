@@ -28,6 +28,7 @@ import {
   updateProductStockCount,
   type ProductOverride,
 } from '@/lib/cmsData';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 import BarcodePrintModal from '@/components/voltz/BarcodePrintModal';
 
 
@@ -229,7 +230,7 @@ const ImageUploadField: React.FC<{
       {hasImage && (
         <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-2 border border-gray-100">
           <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-lg overflow-hidden border border-gray-200 flex-shrink-0 bg-white">
-            <img src={value} alt="Preview" className="w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+            <img src={resolveMediaUrl(value)} alt="Preview" className="w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-green-700 flex items-center gap-1"><Check className="w-3 h-3" />{isDataUrl ? 'Uploaded' : 'URL'}</p>
@@ -292,7 +293,7 @@ const AdditionalImagesField: React.FC<{
         <div className="grid grid-cols-4 sm:grid-cols-5 lg:grid-cols-6 gap-2">
           {images.map((img, idx) => (
             <div key={idx} className="relative group aspect-square rounded-lg border border-gray-200 overflow-hidden bg-white">
-              <img src={img} alt={`Additional ${idx + 1}`} className="w-full h-full object-contain p-1" />
+              <img src={resolveMediaUrl(img)} alt={`Additional ${idx + 1}`} className="w-full h-full object-contain p-1" />
               <button
                 type="button"
                 onClick={() => removeImage(idx)}
@@ -1162,7 +1163,7 @@ const CMSProductManager: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   {/* Product image - larger on mobile for better visibility */}
                   <div className={`w-16 h-16 sm:w-14 sm:h-14 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center flex-shrink-0 overflow-hidden ${product.showOnWebsite === false ? 'opacity-50' : ''}`}>
                     {product.image ? (
-                      <img src={product.image} alt={product.name} className="w-full h-full object-cover rounded-xl" />
+                      <img src={resolveMediaUrl(product.image)} alt={product.name} className="w-full h-full object-cover rounded-xl" />
                     ) : (
                       <Package className="w-6 h-6 text-gray-300" />
                     )}
@@ -1330,7 +1331,7 @@ const CMSProductManager: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                       <div className="flex gap-2 mt-1 flex-wrap">
                         {product.additionalImages.map((img, i) => (
                           <div key={i} className="w-16 h-16 rounded-lg border border-gray-200 overflow-hidden bg-white">
-                            <img src={img} alt={`Additional ${i + 1}`} className="w-full h-full object-contain p-0.5" />
+                            <img src={resolveMediaUrl(img)} alt={`Additional ${i + 1}`} className="w-full h-full object-contain p-0.5" />
                           </div>
                         ))}
                       </div>

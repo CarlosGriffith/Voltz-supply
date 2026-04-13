@@ -947,7 +947,7 @@ const CMSDashboardInner: React.FC = () => {
       notify({
         variant: 'error',
         title: 'Database unavailable',
-        subtitle: health.error || 'Set AIVEN_MYSQL_* in Netlify or .env and redeploy.',
+        subtitle: health.error || 'Set AIVEN_MYSQL_* on Render (API service) or in .env for local dev, then redeploy/restart.',
       });
     }
 

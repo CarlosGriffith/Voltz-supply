@@ -9,6 +9,7 @@ import { Product } from '@/data/products';
 import { useLiveFeaturedProducts, useLiveCMSSettings, useLiveContactDetails } from '@/hooks/useLiveCMSData';
 import QuoteRequest from '@/components/voltz/QuoteRequest';
 import ImageSlideshow from '@/components/voltz/ImageSlideshow';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 
 
 // Tag color mapping
@@ -174,7 +175,7 @@ const ProductDetailModal: React.FC<{
                 {selectedImage ? (
                   <>
                     <img
-                      src={selectedImage}
+                      src={resolveMediaUrl(selectedImage)}
                       alt={product.name}
                       className="w-full h-full object-contain p-4 transition-transform group-hover/img:scale-105"
                       onError={(e) => {
@@ -220,7 +221,7 @@ const ProductDetailModal: React.FC<{
                         selectedImage === img ? 'border-[#e31e24] shadow-md' : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
-                      <img src={img} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
+                      <img src={resolveMediaUrl(img)} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
                     </button>
                   ))}
                 </div>
@@ -407,7 +408,7 @@ const ProductDetailModal: React.FC<{
                     product.documents.map((doc, i) => (
                       <a
                         key={i}
-                        href={doc.url}
+                        href={resolveMediaUrl(doc.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="w-full flex items-center gap-4 p-4 rounded-xl border border-gray-200 hover:border-[#e31e24]/30 hover:bg-red-50/30 transition-all text-left group"
@@ -632,7 +633,7 @@ const FeaturedProducts: React.FC = () => {
                 >
                   {product.image ? (
                     <img
-                      src={product.image}
+                      src={resolveMediaUrl(product.image)}
                       alt={product.name}
                       className="w-full h-full object-cover"
                       onError={(e) => {

@@ -33,6 +33,7 @@ import {
   INVOICE_STATUS_PAID,
   INVOICE_STATUS_PARTIALLY_PAID,
 } from '@/lib/posData';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 import { useCMSNotification } from '@/contexts/CMSNotificationContext';
 import { loadContactDetails } from '@/contexts/CMSContext';
 import {
@@ -2834,7 +2835,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                     className="w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 rounded-lg"
                   >
                     {p.image ? (
-                      <img src={p.image} alt="" className="w-11 h-11 rounded-lg object-cover border" />
+                      <img src={resolveMediaUrl(p.image)} alt="" className="w-11 h-11 rounded-lg object-cover border" />
                     ) : (
                       <div className="w-11 h-11 rounded-lg bg-gray-100 flex items-center justify-center">
                         <Package className="w-5 h-5 text-gray-400" />
@@ -3248,7 +3249,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                   </div>
                   <div className={`flex items-center gap-2 min-w-0 px-1 ${rowMuted}`}>
                     {item.product_image ? (
-                      <img src={item.product_image} alt="" className="w-9 h-9 rounded-lg object-cover border flex-shrink-0" />
+                      <img src={resolveMediaUrl(item.product_image)} alt="" className="w-9 h-9 rounded-lg object-cover border flex-shrink-0" />
                     ) : (
                       <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
                         <Package className="w-4 h-4 text-gray-400" />

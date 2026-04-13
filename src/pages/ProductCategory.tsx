@@ -16,6 +16,7 @@ import ProductFilterSidebar, { type FilterState } from '@/components/voltz/Produ
 import { useLiveCategoryProducts, useLiveCategories, useLiveCMSSettings, useLiveContactDetails } from '@/hooks/useLiveCMSData';
 import QuoteRequest from '@/components/voltz/QuoteRequest';
 import ImageSlideshow from '@/components/voltz/ImageSlideshow';
+import { resolveMediaUrl } from '@/lib/mediaUrl';
 
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/6995573664728a165adc7a9f_1772110039178_7206a7df.png';
@@ -160,7 +161,7 @@ const ProductDetailModal: React.FC<{
               >
                 {selectedImage ? (
                   <>
-                    <img src={selectedImage} alt={product.name} className="w-full h-full object-contain p-4 transition-transform group-hover/img:scale-105" />
+                    <img src={resolveMediaUrl(selectedImage)} alt={product.name} className="w-full h-full object-contain p-4 transition-transform group-hover/img:scale-105" />
                     {/* Hover overlay */}
                     <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/10 transition-colors flex items-center justify-center pointer-events-none">
                       <div className="opacity-0 group-hover/img:opacity-100 transition-opacity bg-black/60 text-white text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-2 shadow-lg">
@@ -189,7 +190,7 @@ const ProductDetailModal: React.FC<{
                         selectedImage === img ? 'border-[#e31e24] shadow-md' : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
-                      <img src={img} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
+                      <img src={resolveMediaUrl(img)} alt={`View ${idx + 1}`} className="w-full h-full object-contain p-1" />
                     </button>
                   ))}
                 </div>
@@ -332,7 +333,7 @@ const ProductDetailModal: React.FC<{
                 <div className="space-y-3">
                   {product.documents && product.documents.length > 0 ? (
                     product.documents.map((doc, i) => (
-                      <a key={i} href={doc.url} target="_blank" rel="noopener noreferrer"
+                      <a key={i} href={resolveMediaUrl(doc.url)} target="_blank" rel="noopener noreferrer"
                         className="w-full flex items-center gap-4 p-4 rounded-xl border border-gray-200 hover:border-[#e31e24]/30 hover:bg-red-50/30 transition-all text-left group">
                         <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0"><FileText className="w-5 h-5 text-[#e31e24]" /></div>
                         <div className="flex-1 min-w-0">
@@ -852,7 +853,7 @@ const ProductCategory: React.FC = () => {
                         onClick={() => setSelectedProduct(product)}
                       >
                         {product.image ? (
-                          <img src={product.image} alt={product.name} className="w-full h-full object-contain p-2" />
+                          <img src={resolveMediaUrl(product.image)} alt={product.name} className="w-full h-full object-contain p-2" />
                         ) : (
                           <CatIcon className="w-16 h-16 text-gray-200 group-hover:text-[#e31e24]/20 transition-colors" />
                         )}
