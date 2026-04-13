@@ -1,5 +1,7 @@
 // ============================================================
-// CloudFront Function: SPA URL Rewrite for React Router
+// AWS CloudFront Function (optional): SPA URL Rewrite for React Router
+// Only if you use Amazon CloudFront in front of S3 — not Netlify’s CDN.
+// See AWS_CLOUDFRONT_API.md
 // ============================================================
 //
 // This function rewrites all non-file requests to /index.html

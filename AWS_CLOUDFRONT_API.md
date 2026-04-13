@@ -1,10 +1,12 @@
-# CloudFront + S3 frontend, Netlify API (same-origin `/api`)
+# AWS CloudFront + S3 (optional) — not Netlify’s CDN
 
-**Skip this document** if your **frontend and serverless API are both on Netlify** (same site). In that case `netlify.toml` already routes `/api/*` to the function; keep `voltz-api-origin` empty and do not set `VITE_API_URL`.
+**Netlify already has a global edge network (CDN).** When your site and API are **both** on Netlify, `netlify.toml` rewrites apply at Netlify’s edge — you do **not** use Amazon CloudFront for that.
+
+**Skip this document** unless you deliberately host the **static SPA on AWS S3 behind Amazon CloudFront** while keeping the **API on Netlify**. Then read on.
 
 ---
 
-If `www.yoursite.com` is served from **S3 + CloudFront** while the API is on **Netlify**, **do not** point the browser at `https://*.netlify.app` from JavaScript when your site uses a strict **Content-Security-Policy** (`connect-src 'self'`). The browser will block those requests (**Failed to fetch**) before CORS matters.
+If `www.yoursite.com` is served from **S3 + Amazon CloudFront** while the API is on **Netlify**, **do not** point the browser at `https://*.netlify.app` from JavaScript when your site uses a strict **Content-Security-Policy** (`connect-src 'self'`). The browser will block those requests (**Failed to fetch**) before CORS matters.
 
 **Recommended approach:** Keep API calls **same-origin** — `fetch('/api/...')` on `https://www.yoursite.com` — and configure **CloudFront** to forward `/api/*` to your Netlify site. Then CSP only needs to allow `'self'` for `connect-src`, which it already does.
 

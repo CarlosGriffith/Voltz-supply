@@ -1,6 +1,6 @@
 # Deploy on Netlify
 
-This project’s **API is a Netlify serverless function** (`netlify/functions/api.mjs`). The **Vite frontend** is built to `dist/` and served by Netlify; `netlify.toml` rewrites `/api/*` to that function.
+This project’s **API is a Netlify serverless function** (`netlify/functions/api.mjs`). The **Vite frontend** is built to `dist/` and served by Netlify; `netlify.toml` rewrites `/api/*` to that function at **Netlify’s edge** (Netlify’s built-in global CDN — not Amazon CloudFront unless you add AWS separately).
 
 ### Full stack on Netlify (most common)
 
@@ -8,9 +8,9 @@ If **both** the SPA and the API are served from the **same Netlify site** (e.g. 
 
 - Leave **`VITE_API_URL`** unset in Netlify environment variables.
 - Keep **`voltz-api-origin`** empty in `index.html` (default in this repo).
-- The browser calls **`/api/...` on the same host** — no cross-origin setup, no `CLOUDFRONT_API.md`.
+- The browser calls **`/api/...` on the same host** — no cross-origin setup. You do **not** need **`AWS_CLOUDFRONT_API.md`** (that file is only for optional **AWS** CloudFront + S3 setups).
 
-Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. S3 + CloudFront) while the API stays on Netlify.
+Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. **AWS** S3 + **Amazon** CloudFront) while the API stays on Netlify.
 
 ## One-time setup
 
@@ -32,17 +32,17 @@ Use **Split hosting** below only if static assets are hosted **outside** Netlify
 
 Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netlify function already uses blob storage.
 
-### Split hosting (SPA on S3 / CloudFront, API on Netlify)
+### Split hosting (SPA on AWS S3 / Amazon CloudFront, API on Netlify)
 
-If the SPA is on **`www`** (CloudFront) and the API on **Netlify**, **prefer same-origin API URLs** (`/api/...` on `www`) and **proxy `/api/*` in CloudFront** to `https://voltz-supply.netlify.app`. That avoids **Content-Security-Policy** blocking cross-origin `fetch` to `*.netlify.app` (**Failed to fetch**). Step-by-step: **`CLOUDFRONT_API.md`**.
+If the SPA is on **`www`** via **Amazon CloudFront + S3** and the API on **Netlify**, **prefer same-origin API URLs** (`/api/...` on `www`) and **proxy `/api/*` in CloudFront** to `https://voltz-supply.netlify.app`. That avoids **Content-Security-Policy** blocking cross-origin `fetch` to `*.netlify.app` (**Failed to fetch**). Step-by-step: **`AWS_CLOUDFRONT_API.md`**.
 
 **Pick one:**
 
 1. **Simplest — host the whole site on Netlify**  
-   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset and **`voltz-api-origin` meta empty**. `netlify.toml` rewrites `/api/*` to the serverless function.
+   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset and **`voltz-api-origin` meta empty**. `netlify.toml` rewrites `/api/*` to the serverless function at Netlify’s edge.
 
-2. **CloudFront + S3 SPA, API on Netlify (recommended for AWS)**  
-   Leave **`voltz-api-origin` empty** in `index.html`. Add a CloudFront **origin** (Netlify host) and a **behavior** for `/api/*` → that origin. See **`CLOUDFRONT_API.md`**. Do not rewrite `/api/*` to `index.html` in `cloudfront-function.js`.
+2. **Amazon CloudFront + S3 SPA, API on Netlify (AWS-only split)**  
+   Leave **`voltz-api-origin` empty** in `index.html`. Add an **AWS CloudFront** **origin** (Netlify host) and a **behavior** for `/api/*` → that origin. See **`AWS_CLOUDFRONT_API.md`**. Do not rewrite `/api/*` to `index.html` in `cloudfront-function.js`.
 
 3. **Cross-origin only if you relax CSP** — build with **`VITE_API_URL=https://voltz-supply.netlify.app`** or set **`voltz-api-origin`** to that URL. Your page **`connect-src`** must allow that host, or the browser will block requests.
 
@@ -71,13 +71,13 @@ If the SPA is on **`www`** (CloudFront) and the API on **Netlify**, **prefer sam
 
 1. **Compare with the Netlify default host**  
    Open `https://voltz-supply.netlify.app/api/health?db=1` (use your real `*.netlify.app` name from **Site settings → Domain management**).  
-   - If this **works** but **`voltzsupply.com`** does not → DNS or routing for the custom domain is wrong, or the apex domain points at **S3 / CloudFront / another host** that has no `/api` route.
+   - If this **works** but **`voltzsupply.com`** does not → DNS for the custom domain is not pointing at **Netlify**, or the domain still hits **another host** (e.g. AWS S3 / **Amazon** CloudFront) that has no `/api` route.
 
 2. **Serve the whole site (including `/api`) from Netlify**  
    In Netlify: **Domain management** → add **`voltzsupply.com`** and **`www.voltzsupply.com`** to this site → follow Netlify’s **DNS** instructions at your registrar (often A/AAAA for apex, CNAME for `www`). Wait for DNS to propagate, then test again.
 
-3. **If you must keep the marketing domain on CloudFront + S3**  
-   `/api` will 404 until you add a CloudFront **behavior** that forwards `/api/*` to your Netlify origin. See **`CLOUDFRONT_API.md`**.
+3. **If the domain must stay on Amazon CloudFront + S3**  
+   `/api` will 404 until you add an **AWS CloudFront** **behavior** that forwards `/api/*` to your Netlify origin. See **`AWS_CLOUDFRONT_API.md`**.
 
 ## Limits
 

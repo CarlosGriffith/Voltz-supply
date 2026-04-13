@@ -2,7 +2,7 @@ type VoltzWindow = Window & { __VOLTZ_API_ORIGIN__?: string };
 
 /**
  * Base URL for API calls (no trailing slash). Empty = same origin.
- * Use when the SPA is on a different host than the API (e.g. CloudFront+S3 → Netlify API):
+ * Use when the SPA is on a different host than the API (e.g. AWS S3 + Amazon CloudFront → Netlify API):
  * 1) Build with `VITE_API_URL=https://your-site.netlify.app`, or
  * 2) Set `<meta name="voltz-api-origin" content="https://your-site.netlify.app" />` in index.html, or
  * 3) `window.__VOLTZ_API_ORIGIN__ = 'https://your-site.netlify.app'` before the app bundle loads.
@@ -117,7 +117,7 @@ export async function getApiHealthDb(): Promise<{
     if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
     if (!dbOk && looksLikeHtml) {
       parts.push(
-        'The API returned HTML instead of JSON: your browser is not reaching Netlify’s /api. Fix: set the API origin to your Netlify site — build with VITE_API_URL=https://<your-site>.netlify.app, or add <meta name="voltz-api-origin" content="https://<your-site>.netlify.app" /> to index.html (no trailing slash). On CloudFront, also ensure cloudfront-function.js does not rewrite /api/* to index.html.'
+        'The API returned HTML instead of JSON: your browser is not reaching Netlify’s /api. Fix: set the API origin to your Netlify site — build with VITE_API_URL=https://<your-site>.netlify.app, or add <meta name="voltz-api-origin" content="https://<your-site>.netlify.app" /> to index.html (no trailing slash). If you use AWS CloudFront, ensure cloudfront-function.js does not rewrite /api/* to index.html.'
       );
     } else if (!dbOk && parts.length === 0 && text.trim()) {
       parts.push(text.trim().slice(0, 400));
