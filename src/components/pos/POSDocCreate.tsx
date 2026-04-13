@@ -1160,15 +1160,18 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             <div className="flex flex-col md:flex-row md:items-stretch gap-4">
               <div className="flex-1 min-w-0 flex md:items-center md:justify-start justify-start">
                 {isReviewPage && reviewInvoiceForPriorPaymentLine ? (
-                  <p className="text-sm font-medium text-[#1a2332] tabular-nums text-left [overflow-wrap:anywhere]">
-                    Payment Already Received: ${fmtCurrency(safeNum(reviewInvoiceForPriorPaymentLine.amount_paid))}
-                    {type !== 'invoice' ? (
-                      <span className="text-gray-600 font-normal">
-                        {' '}
-                        ({reviewInvoiceForPriorPaymentLine.invoice_number})
-                      </span>
-                    ) : null}
-                  </p>
+                  <div className="text-left space-y-0.5 [overflow-wrap:anywhere]">
+                    <p className="text-sm font-medium text-[#1a2332]">Payment Already Received</p>
+                    <p className="text-sm font-semibold text-[#1a2332] tabular-nums">
+                      ${fmtCurrency(safeNum(reviewInvoiceForPriorPaymentLine.amount_paid))}
+                      {type !== 'invoice' ? (
+                        <span className="text-gray-600 font-normal">
+                          {' '}
+                          ({reviewInvoiceForPriorPaymentLine.invoice_number})
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
                 ) : null}
               </div>
               <div className="w-full md:w-72 shrink-0 space-y-2 md:ml-auto">
