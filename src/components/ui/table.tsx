@@ -30,12 +30,19 @@ const HeaderColIndexContext = React.createContext<{ next: () => number } | null>
 /** When true with variant pos, body cells use a slightly smaller record font size. */
 const PosCompactRecordsContext = React.createContext(false)
 
+/** POS: short vertical rules between header columns only (not body). */
+const PosHeaderDividersContext = React.createContext(false)
+
 function useResizableOptional() {
   return React.useContext(ResizableContext)
 }
 
 function usePosCompactRecords() {
   return React.useContext(PosCompactRecordsContext)
+}
+
+function usePosHeaderDividers() {
+  return React.useContext(PosHeaderDividersContext)
 }
 
 const Table = React.forwardRef<
@@ -46,8 +53,14 @@ const Table = React.forwardRef<
     resizable?: TableResizableConfig
     /** Smaller text for data rows (headers unchanged). */
     compactRecords?: boolean
+    /**
+     * POS only: show vertical rules between header columns (75% height, vertically centered).
+     * Defaults to on for `variant="pos"`; pass `false` to disable.
+     */
+    headerColumnDividers?: boolean
   }
->(({ className, variant = "default", resizable, compactRecords = false, children, ...props }, ref) => {
+>(({ className, variant = "default", resizable, compactRecords = false, headerColumnDividers, children, ...props }, ref) => {
+  const showPosHeaderDividers = variant === "pos" && headerColumnDividers !== false
   const innerRef = React.useRef<HTMLTableElement | null>(null)
   const setRefs = React.useCallback(
     (node: HTMLTableElement | null) => {
@@ -199,6 +212,7 @@ const Table = React.forwardRef<
 
   return (
     <TableVariantContext.Provider value={variant}>
+      <PosHeaderDividersContext.Provider value={showPosHeaderDividers}>
       <PosCompactRecordsContext.Provider value={variant === "pos" && !!compactRecords}>
         <ResizableContext.Provider value={resizeCtx}>
         <div
@@ -237,6 +251,7 @@ const Table = React.forwardRef<
         </div>
         </ResizableContext.Provider>
       </PosCompactRecordsContext.Provider>
+      </PosHeaderDividersContext.Provider>
     </TableVariantContext.Provider>
   )
 })
@@ -341,6 +356,7 @@ const TableHead = React.forwardRef<
 >(({ className, children, ...props }, ref) => {
   const v = useTableVariant()
   const resizable = useResizableOptional()
+  const headerDividers = usePosHeaderDividers()
   const headIdx = React.useContext(HeaderColIndexContext)
   const colIndex = v === "pos" && headIdx ? headIdx.next() : -1
   const showResize =
@@ -359,6 +375,8 @@ const TableHead = React.forwardRef<
               "first:pl-4 last:pr-4",
               "bg-gray-50 hover:bg-gray-50",
               showResize && "pr-2",
+              headerDividers &&
+                "after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[''] last:after:hidden [&:has([role=checkbox])]:after:hidden",
             ]
           : [
               "h-auto whitespace-nowrap px-4 py-3.5 text-left align-middle",
