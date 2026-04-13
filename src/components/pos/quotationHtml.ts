@@ -60,6 +60,21 @@ function lineTaxFlag(
   return docTaxAmount > 0 && taxRate > 0 ? 'T' : 'B';
 }
 
+function receiptDocLabelSortKey(label: string): [number, string] {
+  const s = String(label || '').trim();
+  const m = /^INV-(\d+)$/i.exec(s);
+  if (m) return [parseInt(m[1], 10), s];
+  if (!s) return [Number.POSITIVE_INFINITY, ''];
+  return [Number.MAX_SAFE_INTEGER, s.toLowerCase()];
+}
+
+function compareReceiptDocLabelsForSort(a: string, b: string): number {
+  const ka = receiptDocLabelSortKey(a);
+  const kb = receiptDocLabelSortKey(b);
+  if (ka[0] !== kb[0]) return ka[0] - kb[0];
+  return ka[1].localeCompare(kb[1]);
+}
+
 export function computeTaxableSplit(props: PrintDocProps): { taxable: number; nontaxable: number } {
   const tr = safeNum(props.taxRate);
   const ta = safeNum(props.taxAmount);
@@ -142,17 +157,31 @@ export function buildQuotationDocumentHtml(
     isReceipt && Array.isArray(receiptSettlement) && receiptSettlement.length > 1;
 
   const receiptLineInv = props.receiptLineInvoiceNumbers;
-
-  const rows = lineItems
-    .map((item, rowIdx) => {
-      const flag = lineTaxFlag(item, ta, tr);
-      const sku = item.part_number || item.product_id || '—';
+  const receiptRowsOrdered = (() => {
+    const pairs = lineItems.map((item, rowIdx) => {
       const invLabel =
         isReceipt &&
         Array.isArray(receiptLineInv) &&
         receiptLineInv.length === lineItems.length
           ? String(receiptLineInv[rowIdx] ?? '').trim()
           : '';
+      return { item, invLabel };
+    });
+    if (
+      isReceipt &&
+      Array.isArray(receiptLineInv) &&
+      receiptLineInv.length === lineItems.length &&
+      lineItems.length > 0
+    ) {
+      return [...pairs].sort((x, y) => compareReceiptDocLabelsForSort(x.invLabel, y.invLabel));
+    }
+    return pairs;
+  })();
+
+  const rows = receiptRowsOrdered
+    .map(({ item, invLabel }) => {
+      const flag = lineTaxFlag(item, ta, tr);
+      const sku = item.part_number || item.product_id || '—';
       const itemNumInner = invLabel
         ? `<div style="line-height:1.25">${esc(invLabel)}:</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
         : esc(String(sku));
