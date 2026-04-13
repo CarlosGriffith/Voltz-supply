@@ -460,12 +460,27 @@ const InvoicePaymentReceiptsStatusCell: React.FC<{
 
 const RECEIPT_STATUSES_WITH_INVOICE_LINK = new Set(['approved', 'pending_approval']);
 
-/**
- * Invoice #s for a receipt: primary `invoice_id` plus any listed in combined-checkout notes
- * (`Settlement for invoices: …`).
- */
+function sortInvoiceNumbersForDisplay(nums: string[]): string[] {
+  return [...nums].sort((a, b) => {
+    const ma = /^INV-(\d+)$/i.exec(a.trim());
+    const mb = /^INV-(\d+)$/i.exec(b.trim());
+    if (ma && mb) return parseInt(ma[1], 10) - parseInt(mb[1], 10);
+    return a.localeCompare(b);
+  });
+}
+
+/** Invoice #s for a receipt: `invoice_links`, primary `invoice_id`, and legacy settlement text in `notes`. */
 function invoiceNumbersAssociatedWithReceipt(rec: POSReceipt, invoices: POSInvoice[]): string[] {
   const nums = new Set<string>();
+  const linkRows = rec.invoice_links;
+  if (Array.isArray(linkRows) && linkRows.length > 0) {
+    for (const link of linkRows) {
+      if (!link?.invoice_id) continue;
+      const inv = invoices.find((i) => String(i.id) === String(link.invoice_id));
+      const n = (inv?.invoice_number || '').trim();
+      if (n) nums.add(n);
+    }
+  }
   const primary = rec.invoice_id
     ? invoices.find((i) => String(i.id) === String(rec.invoice_id))
     : undefined;
@@ -482,7 +497,7 @@ function invoiceNumbersAssociatedWithReceipt(rec: POSReceipt, invoices: POSInvoi
     }
   }
 
-  return [...nums];
+  return sortInvoiceNumbersForDisplay([...nums]);
 }
 
 /** Receipt #(s) for an invoice: `invoice_id` on the receipt plus combined-checkout settlement lines (same rules as above). */
