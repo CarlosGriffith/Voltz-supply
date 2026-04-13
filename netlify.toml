@@ -23,12 +23,8 @@
     "@netlify/blobs",
   ]
 
-# Allow fetch() from the marketing domain to the Netlify API host (VITE_API_URL / voltz-api-fallback-origin).
-# Without connect-src including *.netlify.app, browsers report "Failed to fetch" (CSP), not a JSON error.
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https: blob:; font-src 'self' https: data:; connect-src 'self' https://voltz-supply.netlify.app https://*.netlify.app https: wss: data: blob:; frame-ancestors 'self'; base-uri 'self'"
+# Optional CSP: add in Netlify UI only if needed. A second CSP here can combine with other policies and
+# block fetch; the app prefers same-origin /api on your domain (see src/lib/api.ts).
 
 # Express on Netlify: official /api rewrite + uploads proxied to the same function.
 # If /uploads/* 404s in production, check function logs; some accounts preserve the

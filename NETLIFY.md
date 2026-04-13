@@ -33,7 +33,7 @@ Use **Split hosting** below only if static assets are hosted **outside** Netlify
 
 Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netlify function already uses blob storage.
 
-**CSP / `Failed to fetch`:** If you set `VITE_API_URL` to `https://voltz-supply.netlify.app`, the browser calls that host from your custom domain (cross-origin). A strict **Content-Security-Policy** without `connect-src` for `*.netlify.app` blocks `fetch`. This repo adds **`[[headers]]` `Content-Security-Policy`** in `netlify.toml` to allow those calls—redeploy after pull. Alternatively, **unset `VITE_API_URL`** and fix DNS so **`/api` on your domain** is served by Netlify (same origin, no cross-origin CSP issue).
+**`Failed to fetch` / CSP:** Do **not** set `VITE_API_URL` to your `*.netlify.app` URL when using a **custom domain** on the same Netlify site — the app **ignores** that pattern and uses same-origin `/api` (see `src/lib/api.ts`). Remove `VITE_API_URL` from Netlify env and redeploy so the bundle does not embed a cross-origin API base.
 
 ### Split hosting (SPA on AWS S3 / Amazon CloudFront, API on Netlify)
 

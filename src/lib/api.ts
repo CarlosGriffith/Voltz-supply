@@ -1,9 +1,6 @@
 type VoltzWindow = Window & { __VOLTZ_API_ORIGIN__?: string };
 
-/** Default Netlify API host when the page is not on *.netlify.app (custom domain may still serve /api as HTML until DNS is correct). */
-const DEFAULT_NETLIFY_API_FALLBACK = 'https://voltz-supply.netlify.app';
-
-/** True when we should prefer the Netlify *.netlify.app host for /api (custom domain / wrong routing). */
+/** True when optional cross-origin fallback meta may apply (non-localhost, not already on *.netlify.app). */
 function shouldUseNetlifyFallbackHost(): boolean {
   if (typeof window === 'undefined') return false;
   const h = window.location.hostname;
@@ -12,36 +9,42 @@ function shouldUseNetlifyFallbackHost(): boolean {
   return true;
 }
 
-/**
- * Optional second meta: when set (default), same-origin /api is skipped for API calls on custom domains
- * so requests hit Netlify Functions. Set `content=""` on that meta to opt out (e.g. same-origin /api proxy).
- */
+/** Only if `<meta name="voltz-api-fallback-origin" content="https://...">` is set (e.g. split AWS + Netlify). */
 function resolvedNetlifyFallbackOrigin(): string {
   if (typeof document === 'undefined') return '';
   const el = document.querySelector('meta[name="voltz-api-fallback-origin"]');
-  if (el) {
-    const raw = el.getAttribute('content');
-    if (raw !== null && String(raw).trim() === '') return '';
-    const t = String(raw ?? '').trim();
-    if (t) return t.replace(/\/$/, '');
-  }
-  return DEFAULT_NETLIFY_API_FALLBACK.replace(/\/$/, '');
+  if (!el) return '';
+  const raw = el.getAttribute('content');
+  if (raw !== null && String(raw).trim() === '') return '';
+  const t = String(raw ?? '').trim();
+  return t ? t.replace(/\/$/, '') : '';
 }
 
 /**
- * Base URL for API calls (no trailing slash). Empty = same origin.
- * Use when the SPA is on a different host than the API (e.g. AWS S3 + Amazon CloudFront → Netlify API):
- * 1) Build with `VITE_API_URL=https://your-site.netlify.app`, or
- * 2) Set `<meta name="voltz-api-origin" content="https://your-site.netlify.app" />` in index.html, or
- * 3) `window.__VOLTZ_API_ORIGIN__ = 'https://your-site.netlify.app'` before the app bundle loads.
- *
- * On a **custom domain** (not `*.netlify.app`), if `voltz-api-origin` is empty, we use
- * `voltz-api-fallback-origin` (default `https://voltz-supply.netlify.app`) so `/api` hits Netlify even when
- * the apex domain still returns the SPA for `/api/*`. Opt out with `<meta name="voltz-api-fallback-origin" content="" />`.
+ * When `VITE_API_URL` points at `*.netlify.app` but the page is on another host (custom domain),
+ * ignore it so `/api` stays same-origin — Netlify routes `/api` on that domain too (avoids CSP / Failed to fetch).
  */
+function shouldIgnoreViteApiUrlForSameNetlifySite(): boolean {
+  if (typeof window === 'undefined') return false;
+  const v = String(import.meta.env.VITE_API_URL ?? '').trim();
+  if (!v) return false;
+  try {
+    const api = new URL(v);
+    if (!api.hostname.endsWith('.netlify.app')) return false;
+    const h = window.location.hostname;
+    if (h === 'localhost' || h === '127.0.0.1') return false;
+    // Any hostname that is not already the netlify.app API host should use same-origin /api.
+    return api.hostname !== h;
+  } catch {
+    return false;
+  }
+}
+
 export function getApiBaseUrl(): string {
   const fromVite = String(import.meta.env.VITE_API_URL ?? '').trim();
-  if (fromVite) return fromVite.replace(/\/$/, '');
+  if (fromVite && !shouldIgnoreViteApiUrlForSameNetlifySite()) {
+    return fromVite.replace(/\/$/, '');
+  }
 
   if (typeof document !== 'undefined') {
     const meta = document.querySelector('meta[name="voltz-api-origin"]');
@@ -55,7 +58,8 @@ export function getApiBaseUrl(): string {
     if (o) return o.replace(/\/$/, '');
   }
 
-  if (shouldUseNetlifyFallbackHost()) {
+  // Cross-origin fallback to *.netlify.app breaks under strict CSP from a custom domain; prefer same-origin /api.
+  if (shouldUseNetlifyFallbackHost() && !shouldIgnoreViteApiUrlForSameNetlifySite()) {
     const fb = resolvedNetlifyFallbackOrigin();
     if (fb) return fb;
   }
@@ -76,8 +80,8 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
     if (e instanceof TypeError) {
       const hint =
         base === ''
-          ? ' Start the API (npm run dev:api) and open the app from the Vite dev server (npm run dev on port 8000), or run npm run dev:full.'
-          : ' Cross-origin: ensure the API (Netlify) allows CORS (redeploy server), and your site’s Content-Security-Policy includes connect-src https://voltz-supply.netlify.app (or remove CSP connect-src restrictions). Ad blockers can also block *.netlify.app.';
+          ? ' Start the API (npm run dev:api) and use the Vite dev server (npm run dev:full), or open /api/health on your deployed host.'
+          : ' Cross-origin: ensure the API allows CORS; check CSP connect-src and ad blockers.';
       throw new Error(`Cannot reach the server (${url}).${hint}`);
     }
     throw e;
@@ -174,7 +178,7 @@ export async function getApiHealthDb(): Promise<{
     const crossOrigin = Boolean(base);
     let detail = msg;
     if (isNetwork && crossOrigin) {
-      detail = `${msg}. Often strict Content-Security-Policy (connect-src). This repo sets CSP in netlify.toml — redeploy. Or remove VITE_API_URL so /api is same-origin on your domain. Also check ad blockers and mixed HTTP/HTTPS.`;
+      detail = `${msg}. Remove VITE_API_URL in Netlify (use same-origin /api on your domain). Check ad blockers and HTTPS.`;
     } else if (isNetwork && !crossOrigin) {
       detail = `${msg}. Start the API (npm run dev:api) and use the Vite dev server, or open the app on Netlify.`;
     }
