@@ -216,11 +216,40 @@ export function normalizeInvoiceStatus(raw: string | null | undefined): POSInvoi
 
 export function invoiceIsFullyPaid(inv: POSInvoice | null | undefined): boolean {
   if (!inv) return false;
-  if (normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_PAID) return true;
+  const st = normalizeInvoiceStatus(inv.status);
+  if (st === INVOICE_STATUS_REFUNDED) return false;
+  if (st === INVOICE_STATUS_PAID) return true;
   const total = Number(inv.total) || 0;
   const paid = Number(inv.amount_paid) || 0;
   if (total <= 0) return false;
   return paid >= total - 0.005;
+}
+
+/** True when staff can record a refund (paid balance on file and not already fully refunded). */
+export function invoiceCanProcessRefund(inv: POSInvoice | null | undefined): boolean {
+  if (!inv) return false;
+  if (normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED) return false;
+  const paid = Number(inv.amount_paid) || 0;
+  if (paid <= 0.005) return false;
+  const st = normalizeInvoiceStatus(inv.status);
+  if (st === INVOICE_STATUS_PAID) return true;
+  const total = Number(inv.total) || 0;
+  return paid >= total - 0.005;
+}
+
+/** Prefer the most recent receipt tied to an invoice for refund audit linkage. */
+export function latestReceiptIdForInvoice(
+  receipts: POSReceipt[],
+  invoiceId: string | null | undefined
+): string | undefined {
+  if (!invoiceId) return undefined;
+  const list = receipts.filter((r) => String(r.invoice_id || '') === String(invoiceId));
+  if (list.length === 0) return undefined;
+  list.sort(
+    (a, b) =>
+      new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+  );
+  return list[0]?.id;
 }
 
 export function invoiceIsOpenBalance(inv: POSInvoice | null | undefined): boolean {
@@ -1492,16 +1521,24 @@ export async function processRefund(params: {
   refundType: 'cash' | 'store_credit' | 'exchange';
   reason: string;
   notes: string;
+  /** Optional: receipt row this refund was initiated from (audit trail). */
+  receiptId?: string | null;
 }): Promise<POSRefund | null> {
-  const { invoice, items, refundType, reason, notes } = params;
+  const { invoice, items, refundType, reason, notes, receiptId } = params;
   const subtotal = items.reduce((s, i) => s + i.total, 0);
   const taxAmount =
     invoice.tax_rate > 0 ? taxAmountFromSubtotalAndGctPercent(subtotal, invoice.tax_rate) : 0;
   const total = subtotal + taxAmount;
+  const paidBefore = Number(invoice.amount_paid) || 0;
+  if (total > paidBefore + 0.02) {
+    console.error('processRefund: refund total exceeds amount paid', { total, paidBefore });
+    return null;
+  }
   const refundNumber = await generateDocNumber('refund');
   const refund = await saveRefund({
     refund_number: refundNumber,
     invoice_id: invoice.id,
+    receipt_id: receiptId || null,
     customer_id: invoice.customer_id,
     customer_name: invoice.customer_name,
     refund_type: refundType,
@@ -1521,7 +1558,14 @@ export async function processRefund(params: {
     await updateCustomerStoreCredit(invoice.customer_id, Number(store_credit || 0) + total);
   }
   if (refund) {
-    await saveInvoice({ ...invoice, status: INVOICE_STATUS_REFUNDED });
+    const paidAfter = Math.max(0, paidBefore - total);
+    const newStatus =
+      paidAfter < 0.01 ? INVOICE_STATUS_REFUNDED : INVOICE_STATUS_PAID;
+    await saveInvoice({
+      ...invoice,
+      status: newStatus,
+      amount_paid: paidAfter,
+    });
   }
   return refund;
 }

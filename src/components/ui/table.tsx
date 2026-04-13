@@ -27,8 +27,15 @@ const ResizableContext = React.createContext<ResizeCtx>(null)
 
 const HeaderColIndexContext = React.createContext<{ next: () => number } | null>(null)
 
+/** When true with variant pos, body cells use a slightly smaller record font size. */
+const PosCompactRecordsContext = React.createContext(false)
+
 function useResizableOptional() {
   return React.useContext(ResizableContext)
+}
+
+function usePosCompactRecords() {
+  return React.useContext(PosCompactRecordsContext)
 }
 
 const Table = React.forwardRef<
@@ -37,8 +44,10 @@ const Table = React.forwardRef<
     variant?: TableVariant
     /** POS tables: drag vertical dividers in header to resize; widths persist in localStorage */
     resizable?: TableResizableConfig
+    /** Smaller text for data rows (headers unchanged). */
+    compactRecords?: boolean
   }
->(({ className, variant = "default", resizable, children, ...props }, ref) => {
+>(({ className, variant = "default", resizable, compactRecords = false, children, ...props }, ref) => {
   const innerRef = React.useRef<HTMLTableElement | null>(null)
   const setRefs = React.useCallback(
     (node: HTMLTableElement | null) => {
@@ -190,7 +199,8 @@ const Table = React.forwardRef<
 
   return (
     <TableVariantContext.Provider value={variant}>
-      <ResizableContext.Provider value={resizeCtx}>
+      <PosCompactRecordsContext.Provider value={variant === "pos" && !!compactRecords}>
+        <ResizableContext.Provider value={resizeCtx}>
         <div
           className={cn(
             variant === "pos"
@@ -210,7 +220,7 @@ const Table = React.forwardRef<
             className={cn(
               "w-full caption-bottom border-collapse text-sm",
               variant === "pos" && "table-fixed",
-              variant === "pos" && "text-sm",
+              variant === "pos" && (compactRecords ? "text-[13px]" : "text-sm"),
               className
             )}
             {...props}
@@ -225,7 +235,8 @@ const Table = React.forwardRef<
             {children}
           </table>
         </div>
-      </ResizableContext.Provider>
+        </ResizableContext.Provider>
+      </PosCompactRecordsContext.Provider>
     </TableVariantContext.Provider>
   )
 })
@@ -389,13 +400,15 @@ const TableCell = React.forwardRef<
   React.TdHTMLAttributes<HTMLTableCellElement>
 >(({ className, ...props }, ref) => {
   const v = useTableVariant()
+  const compactRecords = usePosCompactRecords()
   return (
     <td
       ref={ref}
       className={cn(
         v === "pos"
           ? [
-              "px-3 py-2.5 align-middle text-sm text-gray-800",
+              "px-3 py-2.5 align-middle text-gray-800",
+              compactRecords ? "text-[13px]" : "text-sm",
               "first:pl-4 last:pr-4",
             ]
           : ["px-4 py-3 align-middle first:pl-6 last:pr-6"],

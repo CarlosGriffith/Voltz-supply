@@ -30,7 +30,8 @@ import {
   createOrderFromWebsiteQuoteRequest, createInvoiceFromWebsiteQuoteRequest,
   markInvoicePaidAndDelivered, processRefund, generateDocNumber, sendEmail, fetchCustomerHistory,
   fetchMergedCustomerHistory, mergePlaceholderCustomerRows,
-  invoiceIsOpenBalance, invoiceIsFullyPaid, INVOICE_STATUS_PAID, INVOICE_STATUS_UNPAID,
+  invoiceIsOpenBalance, invoiceCanProcessRefund, latestReceiptIdForInvoice,
+  INVOICE_STATUS_PAID, INVOICE_STATUS_UNPAID,
   INVOICE_STATUS_PARTIALLY_PAID,
   normalizeInvoiceStatus,
 } from '@/lib/posData';
@@ -936,6 +937,7 @@ const CMSDashboardInner: React.FC = () => {
 
   // Refund modal
   const [refundInvoice, setRefundInvoice] = useState<POSInvoice | null>(null);
+  const [refundReceiptId, setRefundReceiptId] = useState<string | null>(null);
   const [refundType, setRefundType] = useState<'cash' | 'store_credit' | 'exchange'>('cash');
   const [refundReason, setRefundReason] = useState('');
   const [refundItems, setRefundItems] = useState<POSLineItem[]>([]);
@@ -1516,6 +1518,7 @@ const CMSDashboardInner: React.FC = () => {
         <Table
           key={`pos-doc-${docType}-${embed ? 'embed' : 'page'}`}
           variant="pos"
+          compactRecords
           resizable={{
             storageKey: docType === 'receipt' ? 'pos-doc-receipt-v2' : `pos-doc-${docType}`,
             columnCount: POS_TABLE_COLS_DOC[docType],
@@ -1635,7 +1638,7 @@ const CMSDashboardInner: React.FC = () => {
                   )}
                 </TableCell>
                 {docType === 'quote' && (
-                  <TableCell className="text-gray-500 text-sm whitespace-nowrap">
+                  <TableCell className="text-gray-500 whitespace-nowrap">
                     {(() => {
                       const at = (doc as POSQuote).email_sent_at || quoteEmailSentAtByQuoteId.get(doc.id);
                       return at ? fmtDate(at) : '—';
@@ -1812,8 +1815,17 @@ const CMSDashboardInner: React.FC = () => {
                                   Checkout
                                 </DropdownMenuItem>
                               )}
-                              {invoiceIsFullyPaid(doc as POSInvoice) && (
-                                <DropdownMenuItem onClick={() => { setRefundInvoice(doc); setRefundItems(doc.items.map((i: POSLineItem) => ({ ...i }))); setRefundType('cash'); setRefundReason(''); }}>
+                              {invoiceCanProcessRefund(doc as POSInvoice) && (
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    const inv = doc as POSInvoice;
+                                    setRefundInvoice(inv);
+                                    setRefundReceiptId(latestReceiptIdForInvoice(receipts, inv.id) ?? null);
+                                    setRefundItems(inv.items.map((i: POSLineItem) => ({ ...i })));
+                                    setRefundType('cash');
+                                    setRefundReason('');
+                                  }}
+                                >
                                   Refund
                                 </DropdownMenuItem>
                               )}
@@ -1833,6 +1845,26 @@ const CMSDashboardInner: React.FC = () => {
                               <DropdownMenuItem onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}>
                                 Print Receipt
                               </DropdownMenuItem>
+                              {(() => {
+                                const rec = doc as POSReceipt;
+                                const inv = rec.invoice_id
+                                  ? invoices.find((i) => String(i.id) === String(rec.invoice_id))
+                                  : undefined;
+                                if (!inv || !invoiceCanProcessRefund(inv)) return null;
+                                return (
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setRefundInvoice(inv);
+                                      setRefundReceiptId(rec.id);
+                                      setRefundItems(inv.items.map((i: POSLineItem) => ({ ...i })));
+                                      setRefundType('cash');
+                                      setRefundReason('');
+                                    }}
+                                  >
+                                    Refund
+                                  </DropdownMenuItem>
+                                );
+                              })()}
                             </>
                           )}
                         </DropdownMenuContent>
@@ -2013,6 +2045,7 @@ const CMSDashboardInner: React.FC = () => {
       </Dialog>
       <Table
         variant="pos"
+        compactRecords
         resizable={{ storageKey: 'pos-quote-requests', columnCount: 6 }}
         className="table-fixed"
       >
@@ -2035,7 +2068,7 @@ const CMSDashboardInner: React.FC = () => {
                 {qr.company && <p className="text-xs text-gray-400">{qr.company}</p>}
               </TableCell>
               <TableCell className="!pr-2">
-                <p className="text-sm text-gray-800">{stripQuoteRequestProductQtyDisplay(qr.product || '')}</p>
+                <p className="text-inherit text-gray-800">{stripQuoteRequestProductQtyDisplay(qr.product || '')}</p>
                 <p className="text-xs text-gray-400">{qr.category}</p>
                 {qr.quantity && <p className="text-xs text-gray-400">Qty: {qr.quantity}</p>}
               </TableCell>
@@ -2045,7 +2078,7 @@ const CMSDashboardInner: React.FC = () => {
               <TableCell className="text-center">
                 <QuoteRequestQuotedStatusCell qr={qr} quoteList={quotes} onOpenQuote={goToQuoteSearch} />
               </TableCell>
-              <TableCell className="min-w-[15rem] w-[15rem] text-left text-sm text-gray-700 whitespace-nowrap">
+              <TableCell className="min-w-[15rem] w-[15rem] text-left text-gray-700 whitespace-nowrap">
                 {(() => {
                   const linked = findQuoteForWebsiteRequest(qr, quotes);
                   const rawAt =
@@ -2378,7 +2411,7 @@ const CMSDashboardInner: React.FC = () => {
         </div>
       )}
 
-      <Table variant="pos" resizable={{ storageKey: 'pos-customers', columnCount: 6 }}>
+      <Table variant="pos" compactRecords resizable={{ storageKey: 'pos-customers', columnCount: 6 }}>
         <TableHeader>
           <TableRow className="hover:!bg-transparent">
             <TableHead>Name</TableHead>
@@ -2557,10 +2590,12 @@ const CMSDashboardInner: React.FC = () => {
         </button>
         <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Refunds</h2>
       </div>
-      <p className="text-sm text-gray-500 mb-4">To create a refund, go to Invoices and click the refund button on a paid invoice.</p>
+      <p className="text-sm text-gray-500 mb-4">
+        To record a refund, open a paid invoice from Invoices and choose Refund, or open the matching receipt from Receipts and choose Refund. Partial refunds reduce the invoice&apos;s amount paid; you can refund again until the balance is cleared, then the invoice is marked Refunded.
+      </p>
       </>
       )}
-      <Table variant="pos" resizable={{ storageKey: 'pos-refunds', columnCount: 7 }}>
+      <Table variant="pos" compactRecords resizable={{ storageKey: 'pos-refunds', columnCount: 7 }}>
         <TableHeader>
           <TableRow className="hover:!bg-transparent">
             <TableHead>Refund No.</TableHead>
@@ -3341,7 +3376,13 @@ const CMSDashboardInner: React.FC = () => {
       {/* Refund Modal */}
       {refundInvoice && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setRefundInvoice(null)} />
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => {
+              setRefundInvoice(null);
+              setRefundReceiptId(null);
+            }}
+          />
           <div className="relative bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-bold text-[#1a2332] mb-4">Process Refund - {refundInvoice.invoice_number}</h3>
             <div className="mb-4">
@@ -3393,7 +3434,14 @@ const CMSDashboardInner: React.FC = () => {
                   notify({ variant: 'error', title: 'Refund not processed', subtitle: 'POS → Refunds — Select at least one item' });
                   return;
                 }
-                const refund = await processRefund({ invoice: refundInvoice, items: activeItems, refundType, reason: refundReason, notes: '' });
+                const refund = await processRefund({
+                  invoice: refundInvoice,
+                  items: activeItems,
+                  refundType,
+                  reason: refundReason,
+                  notes: '',
+                  receiptId: refundReceiptId,
+                });
                 if (refund) {
                   printDocument({ type: 'refund', docNumber: refund.refund_number, date: refund.created_at, customerName: refund.customer_name, items: refund.items, subtotal: refund.subtotal, taxAmount: refund.tax_amount, total: refund.total, refundType: refund.refund_type, reason: refund.reason });
                   await loadData();
@@ -3402,8 +3450,17 @@ const CMSDashboardInner: React.FC = () => {
                   notify({ variant: 'error', title: 'Refund not saved', subtitle: 'POS → Refunds' });
                 }
                 setRefundInvoice(null);
+                setRefundReceiptId(null);
               }} className="flex-1 py-2.5 bg-[#e31e24] text-white rounded-lg text-sm font-bold hover:bg-[#c91a1f]">Process Refund & Print</button>
-              <button onClick={() => setRefundInvoice(null)} className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => {
+                  setRefundInvoice(null);
+                  setRefundReceiptId(null);
+                }}
+                className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
