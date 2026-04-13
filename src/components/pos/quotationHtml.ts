@@ -179,12 +179,18 @@ export function buildQuotationDocumentHtml(
   })();
 
   const rows = receiptRowsOrdered
-    .map(({ item, invLabel }) => {
+    .map(({ item, invLabel }, idx) => {
       const flag = lineTaxFlag(item, ta, tr);
       const sku = item.part_number || item.product_id || '—';
-      const itemNumInner = invLabel
-        ? `<div style="line-height:1.25">${esc(invLabel)}:</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
-        : esc(String(sku));
+      const cur = String(invLabel ?? '').trim();
+      const prev =
+        idx > 0 ? String(receiptRowsOrdered[idx - 1]?.invLabel ?? '').trim() : '';
+      const sameInvoiceGroup = idx > 0 && cur !== '' && cur === prev;
+      const itemNumInner = !cur
+        ? esc(String(sku))
+        : sameInvoiceGroup
+          ? `<div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
+          : `<div style="line-height:1.25">${esc(cur)}:</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`;
       const uom = item.uom?.trim() || 'EACH';
       const desc = esc(item.product_name);
       const c = 'class="voltz-qdoc-lineitem-cell"';
