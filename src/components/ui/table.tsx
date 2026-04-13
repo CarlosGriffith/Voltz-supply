@@ -345,7 +345,6 @@ const TableHead = React.forwardRef<
           ? [
               "relative h-auto whitespace-nowrap px-3 py-2.5 text-left align-middle",
               "text-xs font-medium text-gray-600",
-              "border-r border-gray-200 last:border-r-0",
               "first:pl-4 last:pr-4",
               "bg-gray-50 hover:bg-gray-50",
               showResize && "pr-2",
@@ -397,7 +396,6 @@ const TableCell = React.forwardRef<
         v === "pos"
           ? [
               "px-3 py-2.5 align-middle text-sm text-gray-800",
-              "border-r border-gray-100 last:border-r-0",
               "first:pl-4 last:pr-4",
             ]
           : ["px-4 py-3 align-middle first:pl-6 last:pr-6"],
