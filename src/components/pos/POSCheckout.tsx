@@ -2078,42 +2078,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
   const accountBalanceDisplay = suppressCrmWalletDisplay ? 0 : accountBalance;
   const storeCreditDisplay = suppressCrmWalletDisplay ? 0 : storeCredit;
 
-  const amountDueForPayment = useMemo(() => {
-    if (!source) {
-      return itemsSectionNetTotal;
-    }
-    let inv: POSInvoice | undefined;
-    if (source.sourceType === 'invoice') {
-      inv = invoices.find((x) => String(x.id) === String(source.sourceDocId));
-    } else if (source.sourceType === 'quote') {
-      const q = quotes.find((x) => String(x.id) === String(source.sourceDocId));
-      if (q?.invoice_id) {
-        const cand = invoices.find((x) => String(x.id) === String(q.invoice_id));
-        if (cand && invoiceIsOpenBalance(cand)) inv = cand;
-      }
-    } else if (source.sourceType === 'order') {
-      const ord = orders.find((x) => String(x.id) === String(source.sourceDocId));
-      if (ord?.invoice_id) {
-        const cand = invoices.find((x) => String(x.id) === String(ord.invoice_id));
-        if (cand && invoiceIsOpenBalance(cand)) inv = cand;
-      }
-    }
-    if (!inv) return documentTotal;
-    return Math.max(0, num(inv.total) - num(inv.amount_paid));
-  }, [
-    source,
-    invoices,
-    quotes,
-    orders,
-    source?.sourceDocId,
-    documentTotal,
-    itemsSectionNetTotal,
-    lineItems,
-    subtotal,
-    taxAmount,
-    discountAmount,
-    gctPercentEffective,
-  ]);
+  /** Always matches Items section Total (cart fiscal − discount − prior payments on referenced invoices). */
+  const amountDueForPayment = itemsSectionNetTotal;
 
   const PAY_EPS = 0.005;
   const safeAmountDue = Math.max(0, Number(amountDueForPayment) || 0);
@@ -3549,19 +3515,16 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         >
           <h3 className="font-bold text-[#1a2332]">Payment</h3>
           <div className="text-sm space-y-3">
-            {source?.sourceType === 'invoice' ||
-            isQuotePayingLinkedOpenInvoice ||
-            isOrderPayingLinkedOpenInvoice ? (
-              <div>
-                <p className="text-gray-500">Amount due (on invoice)</p>
-                <p className="text-xl font-bold text-[#1a2332] tabular-nums">{fmtMoney(amountDueForPayment)}</p>
-              </div>
-            ) : (
-              <div>
-                <p className="text-gray-500">Total</p>
-                <p className="text-xl font-bold text-[#1a2332] tabular-nums">{fmtMoney(itemsSectionNetTotal)}</p>
-              </div>
-            )}
+            <div>
+              <p className="text-gray-500">
+                {source?.sourceType === 'invoice' ||
+                isQuotePayingLinkedOpenInvoice ||
+                isOrderPayingLinkedOpenInvoice
+                  ? 'Amount Due on invoice(s)'
+                  : 'Total'}
+              </p>
+              <p className="text-xl font-bold text-[#1a2332] tabular-nums">{fmtMoney(itemsSectionNetTotal)}</p>
+            </div>
           </div>
 
           <div className="rounded-lg border border-gray-200 p-3 bg-gray-50 space-y-3">
