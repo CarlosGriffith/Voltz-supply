@@ -141,15 +141,26 @@ export function buildQuotationDocumentHtml(
   const showReceiptSettlement =
     isReceipt && Array.isArray(receiptSettlement) && receiptSettlement.length > 1;
 
+  const receiptLineInv = props.receiptLineInvoiceNumbers;
+
   const rows = lineItems
-    .map((item) => {
+    .map((item, rowIdx) => {
       const flag = lineTaxFlag(item, ta, tr);
       const sku = item.part_number || item.product_id || '—';
+      const invLabel =
+        isReceipt &&
+        Array.isArray(receiptLineInv) &&
+        receiptLineInv.length === lineItems.length
+          ? String(receiptLineInv[rowIdx] ?? '').trim()
+          : '';
+      const itemNumInner = invLabel
+        ? `<div style="line-height:1.25">${esc(invLabel)}</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
+        : esc(String(sku));
       const uom = item.uom?.trim() || 'EACH';
       const desc = esc(item.product_name);
       const c = 'class="voltz-qdoc-lineitem-cell"';
       return `<tr>
-        <td ${c} style="padding:5px 6px;font-size:9px">${esc(String(sku))}</td>
+        <td ${c} style="padding:5px 6px;font-size:9px">${itemNumInner}</td>
         <td ${c} style="padding:5px 6px;font-size:9px">${desc}</td>
         <td ${c} style="padding:5px 6px;font-size:9px;text-align:right">${safeNum(item.quantity).toFixed(2)}</td>
         <td ${c} style="padding:5px 6px;font-size:9px;text-align:center">${esc(uom)}</td>

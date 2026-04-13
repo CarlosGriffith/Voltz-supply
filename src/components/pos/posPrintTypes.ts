@@ -33,6 +33,8 @@ export interface PrintDocProps {
   validUntil?: string;
   refundType?: string;
   reason?: string;
+  /** Receipt line items: invoice # (or linked doc ref) for Item # column — same order as {@link items}. */
+  receiptLineInvoiceNumbers?: string[];
   /** Combined multi-invoice receipt: per-invoice totals and amount applied from this receipt. */
   receiptSettlementInvoices?: {
     invoiceNumber: string;

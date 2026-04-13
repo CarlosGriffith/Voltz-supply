@@ -592,6 +592,69 @@ function resolveLabelToStreamKey(
   return 'direct';
 }
 
+/** Receipt Item # column: invoice # when stream is an invoice; else linked invoice or quote/order number. */
+function documentNumberForReceiptFromStreamKey(
+  key: string,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): string | undefined {
+  if (key === 'direct') return undefined;
+  if (key.startsWith('invoice:')) {
+    const inv = invoices.find((x) => String(x.id) === key.slice(8));
+    return inv?.invoice_number;
+  }
+  if (key.startsWith('quote:')) {
+    const q = quotes.find((x) => String(x.id) === key.slice(6));
+    if (!q) return undefined;
+    if (q.invoice_id && String(q.invoice_id).trim() !== '') {
+      const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
+      if (inv?.invoice_number) return inv.invoice_number;
+    }
+    return q.quote_number;
+  }
+  if (key.startsWith('order:')) {
+    const o = orders.find((x) => String(x.id) === key.slice(6));
+    if (!o) return undefined;
+    if (o.invoice_id && String(o.invoice_id ?? '').trim() !== '') {
+      const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
+      if (inv?.invoice_number) return inv.invoice_number;
+    }
+    return o.order_number;
+  }
+  return undefined;
+}
+
+function receiptDocumentNumberForCheckoutLine(
+  item: CheckoutLineItem,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): string | undefined {
+  const allocs = resolvedDocAllocationsForDisplay(item);
+  let label: string | undefined;
+  if (allocs.length > 0) {
+    label = allocs[0].label;
+  } else {
+    const raw = stripDocLabelSuffix(item.checkoutDocLabel || '');
+    const parts = splitDocLabelParts(raw);
+    if (parts.length > 0) label = parts[0];
+  }
+  if (!label || !String(label).trim()) return undefined;
+  const key = resolveLabelToStreamKey(String(label).trim(), quotes, orders, invoices);
+  return documentNumberForReceiptFromStreamKey(key, quotes, orders, invoices);
+}
+
+function receiptLineInvoiceNumbersFromCart(
+  cart: CheckoutLineItem[],
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): string[] {
+  const rows = cart.filter((i) => i.includeInTotal !== false && (Number(i.quantity) || 0) > 0);
+  return rows.map((line) => receiptDocumentNumberForCheckoutLine(line, quotes, orders, invoices) ?? '');
+}
+
 function checkoutLineCloneForStream(
   item: CheckoutLineItem,
   qty: number,
@@ -2669,6 +2732,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           };
         });
 
+        const receiptLineInvoiceNumbers = receiptLineInvoiceNumbersFromCart(lineItems, quotes, orders, invoices);
+
         const receiptDocHtml = buildQuotationDocumentHtml(
           {
             type: 'receipt',
@@ -2690,6 +2755,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             paymentMethod: rec.payment_method,
             notes: rec.notes || '',
             status: rec.status || primaryInv.status,
+            receiptLineInvoiceNumbers,
             receiptSettlementInvoices,
           },
           loadContactDetails(),
@@ -2722,6 +2788,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           paymentMethod: rec.payment_method,
           notes: rec.notes || '',
           status: rec.status || primaryInv.status,
+          receiptLineInvoiceNumbers,
           receiptSettlementInvoices,
         };
         await sendReceiptEmail(rec, mailDoc);
@@ -2768,6 +2835,9 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           });
           if (!rec) throw new Error('Receipt could not be saved');
 
+          const receiptLineItemsSingle = inv.items && inv.items.length > 0 ? inv.items : itemsPayload;
+          const receiptLineInvoiceNumbersSingle = receiptLineItemsSingle.map(() => String(inv.invoice_number || '').trim());
+
           const receiptDocHtml = buildQuotationDocumentHtml(
             {
               type: 'receipt',
@@ -2778,7 +2848,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               customerPhone: inv.customer_phone || customerPhone,
               customerCompany: customerCompany,
               customerAccountNo: inv.customer_id || customerId,
-              items: inv.items || itemsPayload,
+              items: receiptLineItemsSingle,
               subtotal: num(inv.subtotal),
               taxRate: num(inv.tax_rate),
               taxAmount: num(inv.tax_amount),
@@ -2789,6 +2859,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               paymentMethod: rec.payment_method,
               notes: rec.notes || '',
               status: rec.status || inv.status,
+              receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
             },
             loadContactDetails(),
             {
@@ -2809,7 +2880,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             customerPhone: inv.customer_phone || customerPhone,
             customerCompany: customerCompany,
             customerAccountNo: inv.customer_id || customerId,
-            items: inv.items || itemsPayload,
+            items: receiptLineItemsSingle,
             subtotal: num(inv.subtotal),
             taxRate: num(inv.tax_rate),
             taxAmount: num(inv.tax_amount),
@@ -2820,6 +2891,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             paymentMethod: rec.payment_method,
             notes: rec.notes || '',
             status: rec.status || inv.status,
+            receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
           };
           await sendReceiptEmail(rec, mailDoc);
         }
