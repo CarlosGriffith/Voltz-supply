@@ -8,7 +8,8 @@ If **both** the SPA and the API are served from the **same Netlify site** (e.g. 
 
 - Leave **`VITE_API_URL`** unset in Netlify environment variables.
 - Keep **`voltz-api-origin`** empty in `index.html` (default in this repo).
-- The browser calls **`/api/...` on the same host** — no cross-origin setup. You do **not** need **`AWS_CLOUDFRONT_API.md`** (that file is only for optional **AWS** CloudFront + S3 setups).
+- The browser normally calls **`/api/...` on the same host**. If your **custom domain** still serves the SPA for `/api/*` (HTML instead of JSON), `index.html` includes **`voltz-api-fallback-origin`** (default `https://voltz-supply.netlify.app`) so API calls hit Netlify until DNS is fully correct — see `src/lib/api.ts`.
+- You do **not** need **`AWS_CLOUDFRONT_API.md`** unless you use optional **AWS** CloudFront + S3 for the static app.
 
 Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. **AWS** S3 + **Amazon** CloudFront) while the API stays on Netlify.
 

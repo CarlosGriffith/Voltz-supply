@@ -1,11 +1,43 @@
 type VoltzWindow = Window & { __VOLTZ_API_ORIGIN__?: string };
 
+/** Default Netlify API host when the page is not on *.netlify.app (custom domain may still serve /api as HTML until DNS is correct). */
+const DEFAULT_NETLIFY_API_FALLBACK = 'https://voltz-supply.netlify.app';
+
+/** True when we should prefer the Netlify *.netlify.app host for /api (custom domain / wrong routing). */
+function shouldUseNetlifyFallbackHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') return false;
+  if (h.endsWith('.netlify.app')) return false;
+  return true;
+}
+
+/**
+ * Optional second meta: when set (default), same-origin /api is skipped for API calls on custom domains
+ * so requests hit Netlify Functions. Set `content=""` on that meta to opt out (e.g. same-origin /api proxy).
+ */
+function resolvedNetlifyFallbackOrigin(): string {
+  if (typeof document === 'undefined') return '';
+  const el = document.querySelector('meta[name="voltz-api-fallback-origin"]');
+  if (el) {
+    const raw = el.getAttribute('content');
+    if (raw !== null && String(raw).trim() === '') return '';
+    const t = String(raw ?? '').trim();
+    if (t) return t.replace(/\/$/, '');
+  }
+  return DEFAULT_NETLIFY_API_FALLBACK.replace(/\/$/, '');
+}
+
 /**
  * Base URL for API calls (no trailing slash). Empty = same origin.
  * Use when the SPA is on a different host than the API (e.g. AWS S3 + Amazon CloudFront → Netlify API):
  * 1) Build with `VITE_API_URL=https://your-site.netlify.app`, or
  * 2) Set `<meta name="voltz-api-origin" content="https://your-site.netlify.app" />` in index.html, or
  * 3) `window.__VOLTZ_API_ORIGIN__ = 'https://your-site.netlify.app'` before the app bundle loads.
+ *
+ * On a **custom domain** (not `*.netlify.app`), if `voltz-api-origin` is empty, we use
+ * `voltz-api-fallback-origin` (default `https://voltz-supply.netlify.app`) so `/api` hits Netlify even when
+ * the apex domain still returns the SPA for `/api/*`. Opt out with `<meta name="voltz-api-fallback-origin" content="" />`.
  */
 export function getApiBaseUrl(): string {
   const fromVite = String(import.meta.env.VITE_API_URL ?? '').trim();
@@ -21,6 +53,11 @@ export function getApiBaseUrl(): string {
     const w = window as VoltzWindow;
     const o = String(w.__VOLTZ_API_ORIGIN__ ?? '').trim();
     if (o) return o.replace(/\/$/, '');
+  }
+
+  if (shouldUseNetlifyFallbackHost()) {
+    const fb = resolvedNetlifyFallbackOrigin();
+    if (fb) return fb;
   }
 
   return '';
@@ -117,7 +154,7 @@ export async function getApiHealthDb(): Promise<{
     if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
     if (!dbOk && looksLikeHtml) {
       parts.push(
-        'The API returned HTML instead of JSON: your browser is not reaching Netlify’s /api. Fix: set the API origin to your Netlify site — build with VITE_API_URL=https://<your-site>.netlify.app, or add <meta name="voltz-api-origin" content="https://<your-site>.netlify.app" /> to index.html (no trailing slash). If you use AWS CloudFront, ensure cloudfront-function.js does not rewrite /api/* to index.html.'
+        'Same-origin /api returned the SPA (HTML) instead of JSON — the hostname you opened is not routing /api to Netlify Functions. Point the domain to Netlify (Domain management + DNS), or rely on voltz-api-fallback-origin in index.html (defaults to https://voltz-supply.netlify.app).'
       );
     } else if (!dbOk && parts.length === 0 && text.trim()) {
       parts.push(text.trim().slice(0, 400));
