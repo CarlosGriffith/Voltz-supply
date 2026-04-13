@@ -1,0 +1,11 @@
+# Render Blueprint — API web service (https://render.com/docs/blueprint-spec)
+version: "1"
+services:
+  - type: web
+    name: voltz-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health

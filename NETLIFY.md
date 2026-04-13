@@ -1,88 +1,35 @@
-# Deploy on Netlify
+# Deploy the frontend on Netlify
 
-This project’s **API is a Netlify serverless function** (`netlify/functions/api.mjs`). The **Vite frontend** is built to `dist/` and served by Netlify; `netlify.toml` rewrites `/api/*` to that function at **Netlify’s edge** (Netlify’s built-in global CDN — not Amazon CloudFront unless you add AWS separately).
-
-### Full stack on Netlify (most common)
-
-If **both** the SPA and the API are served from the **same Netlify site** (e.g. `voltz-supply.netlify.app` or your custom domain in Netlify):
-
-- Leave **`VITE_API_URL`** unset in Netlify environment variables.
-- Keep **`voltz-api-origin`** empty in `index.html` (default in this repo).
-- On **custom domains**, `index.html` sets **`voltz-api-fallback-origin`** to **`https://voltz-supply.netlify.app`** so API calls reach Netlify even if `/api/*` on the marketing host still returns the SPA (DNS not fully on Netlify). When DNS is correct you can clear that meta to use same-origin `/api` only. If **`Failed to fetch`** appears, your **Content-Security-Policy** may need `connect-src` to include that Netlify URL (or relax CSP).
-- You do **not** need **`AWS_CLOUDFRONT_API.md`** unless you use optional **AWS** CloudFront + S3 for the static app.
-
-Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. **AWS** S3 + **Amazon** CloudFront) while the API stays on Netlify.
+The **API runs on Render** — see **`RENDER.md`**. Netlify serves the **static Vite build** (`dist/`) only; it does **not** run the Express server. The browser calls your Render URL for `/api` and `/uploads` (set **`VITE_API_URL`** below).
 
 ## One-time setup
 
-1. **Create a site** from a Git repo (recommended), or upload a **zip of the project without `node_modules` and `dist`**—Netlify runs a clean install and build. If you drag the whole folder including `node_modules`, builds are slower and can hit size limits. Set environment variables in the Netlify UI either way.
-2. **Build settings** (already in `netlify.toml`):
+1. **Create a site** from this Git repo (recommended).
+2. **Build settings** (in `netlify.toml`):
    - Build command: `npm run build`
    - Publish directory: `dist`
-3. **Environment variables** (Site configuration → Environment variables). Use the same values as local `.env` for Aiven:
+3. **Environment variables** (Site → Environment variables):
 
 | Variable | Required | Notes |
 |----------|----------|--------|
-| `AIVEN_MYSQL_HOST` | Yes | |
-| `AIVEN_MYSQL_PORT` | Yes | |
-| `AIVEN_MYSQL_USER` | Yes | |
-| `AIVEN_MYSQL_PASSWORD` | Yes | Secret |
-| `AIVEN_MYSQL_DATABASE` | Yes | e.g. `defaultdb` |
-| `AIVEN_CA_PATH` | If CA not bundled | Default bundle includes `scripts/aiven-ca.pem` via `included_files` |
-| `VITE_API_URL` | No | Leave **empty** when the site is served from Netlify so `/api` is same-origin. See **Split hosting** below if the SPA is elsewhere. |
+| **`VITE_API_URL`** | **Yes** | Your Render API origin, e.g. `https://voltz-api.onrender.com` — **no trailing slash**. Rebuild after changing. |
+| `AIVEN_*` | **No** | Not used by the static site; set those on **Render** for the API. |
 
-Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netlify function already uses blob storage.
+**Or** set **`voltz-api-origin`** in `index.html` to the same URL if you prefer not to use env-based builds.
 
-**`Failed to fetch` / CSP:** Prefer leaving **`VITE_API_URL`** unset so the client uses **`voltz-api-fallback-origin`** / same-origin rules only. If you do set it to `*.netlify.app` on a custom domain, the build **does not** use that URL as the API base; **`voltz-api-fallback-origin`** in `index.html` still applies (see `getApiBaseUrl` in `src/lib/api.ts`).
+4. **Content-Security-Policy:** allow **`connect-src`** (and **`img-src`** if you load upload URLs) to your **Render** hostname, or the browser will block requests.
 
-### Split hosting (SPA on AWS S3 / Amazon CloudFront, API on Netlify)
-
-If the SPA is on **`www`** via **Amazon CloudFront + S3** and the API on **Netlify**, **prefer same-origin API URLs** (`/api/...` on `www`) and **proxy `/api/*` in CloudFront** to `https://voltz-supply.netlify.app`. That avoids **Content-Security-Policy** blocking cross-origin `fetch` to `*.netlify.app` (**Failed to fetch**). Step-by-step: **`AWS_CLOUDFRONT_API.md`**.
-
-**Pick one:**
-
-1. **Simplest — host the whole site on Netlify**  
-   Point your domain (or `www`) to Netlify and deploy this repo. Keep `VITE_API_URL` unset and **`voltz-api-origin` meta empty**. `netlify.toml` rewrites `/api/*` to the serverless function at Netlify’s edge.
-
-2. **Amazon CloudFront + S3 SPA, API on Netlify (AWS-only split)**  
-   Leave **`voltz-api-origin` empty** in `index.html`. Add an **AWS CloudFront** **origin** (Netlify host) and a **behavior** for `/api/*` → that origin. See **`AWS_CLOUDFRONT_API.md`**. Do not rewrite `/api/*` to `index.html` in `cloudfront-function.js`.
-
-3. **Cross-origin only if you relax CSP** — build with **`VITE_API_URL=https://voltz-supply.netlify.app`** or set **`voltz-api-origin`** to that URL. Your page **`connect-src`** must allow that host, or the browser will block requests.
-
-4. **Product images (Blobs)**  
-   Local files under `server/uploads/` are **not** deployed. After importing data or saving images locally, push binaries to Netlify Blobs **once** (per site):
-
-   ```bash
-   set NETLIFY_SITE_ID=your-site-id
-   set NETLIFY_AUTH_TOKEN=your-personal-access-token
-   npm run netlify:sync-blobs
-   ```
-
-   Or re-upload images through the CMS on production (they go straight to Blobs).
-
-5. **MySQL schema**  
-   Run `db:bootstrap:aiven` and `db:bootstrap:cms` from your machine (or any CI) against Aiven **before** relying on production—Netlify build does not run these.
+5. **Optional meta:** leave **`voltz-api-fallback-origin`** empty unless you use the split-DNS workaround described in `src/lib/api.ts`.
 
 ## After deploy
 
-- Open `https://<your-site>.netlify.app/api/health?db=1` and confirm `db` is `ok`.
-- If `/uploads/...` images 404, confirm blob sync ran and check **Functions** logs.
+- Open your site and confirm the CMS/POS loads data.
+- On Render, check `https://<your-service>.onrender.com/api/health?db=1` returns JSON with `db: ok`.
 
-### `/api/health` returns 404 on your custom domain (e.g. voltzsupply.com)
+## Amazon CloudFront + S3 (optional)
 
-`netlify.toml` only applies to traffic that **Netlify’s CDN** serves. A **404** on `https://voltzsupply.com/api/...` almost always means **`voltzsupply.com` is not going through Netlify** for that request (or the domain is not attached to this site).
+If the SPA is served from **AWS** CloudFront + S3 while the API is on **Render**, point **`VITE_API_URL`** at Render, or proxy `/api/*` on CloudFront to your Render service (see **`AWS_CLOUDFRONT_API.md`** and adapt origins to Render).
 
-1. **Compare with the Netlify default host**  
-   Open `https://voltz-supply.netlify.app/api/health?db=1` (use your real `*.netlify.app` name from **Site settings → Domain management**).  
-   - If this **works** but **`voltzsupply.com`** does not → DNS for the custom domain is not pointing at **Netlify**, or the domain still hits **another host** (e.g. AWS S3 / **Amazon** CloudFront) that has no `/api` route.
+## Legacy: Netlify Functions + Blobs
 
-2. **Serve the whole site (including `/api`) from Netlify**  
-   In Netlify: **Domain management** → add **`voltzsupply.com`** and **`www.voltzsupply.com`** to this site → follow Netlify’s **DNS** instructions at your registrar (often A/AAAA for apex, CNAME for `www`). Wait for DNS to propagate, then test again.
-
-3. **If the domain must stay on Amazon CloudFront + S3**  
-   `/api` will 404 until you add an **AWS CloudFront** **behavior** that forwards `/api/*` to your Netlify origin. See **`AWS_CLOUDFRONT_API.md`**.
-
-## Limits
-
-- Serverless payload limit (~6 MB buffered) caps large uploads; product image uploads use a 4 MB limit in blob mode.
-- Function timeout (default 60s) applies to long admin exports.
+Older revisions used a Netlify serverless API and Netlify Blobs for uploads. That path is removed from `netlify.toml`. Product images created under **`npm run netlify:sync-blobs`** applied only to that setup; on Render, uploads live on **disk** (see **`RENDER.md`** — add a persistent disk or external storage for production).

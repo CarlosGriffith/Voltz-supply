@@ -941,7 +941,7 @@ const CMSDashboardInner: React.FC = () => {
       notify({
         variant: 'error',
         title: 'API unreachable',
-        subtitle: health.error || 'Confirm the site can reach /api (Netlify function or local dev:api).',
+        subtitle: health.error || 'Confirm the app can reach the API (Render URL in VITE_API_URL, or local npm run dev:full).',
       });
     } else if (!health.dbOk) {
       notify({

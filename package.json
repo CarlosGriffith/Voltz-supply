@@ -3,7 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "start": "node server/index.mjs",
     "dev": "vite --port 8000",
     "dev:api": "node server/index.mjs",
     "dev:full": "concurrently -k \"npm run dev:api\" \"npm run dev\"",

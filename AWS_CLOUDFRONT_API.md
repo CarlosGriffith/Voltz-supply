@@ -1,8 +1,8 @@
 # AWS CloudFront + S3 (optional) — not Netlify’s CDN
 
-**Netlify already has a global edge network (CDN).** When your site and API are **both** on Netlify, `netlify.toml` rewrites apply at Netlify’s edge — you do **not** use Amazon CloudFront for that.
+**Netlify already has a global edge network (CDN).** This repo’s **API is normally on Render** (`RENDER.md`); Netlify may serve **only** the static SPA. Use Amazon CloudFront when the **marketing site** is **S3 + CloudFront** and you want `/api/*` on `www` to proxy to your API origin.
 
-**Skip this document** unless you deliberately host the **static SPA on AWS S3 behind Amazon CloudFront** while keeping the **API on Netlify**. Then read on.
+**Skip this document** unless you deliberately host the **static SPA on AWS S3 behind Amazon CloudFront** and need **`/api/*` on `www`** to reach your API (e.g. **Render** — use your **`*.onrender.com`** host as the second origin instead of Netlify). Then read on.
 
 ---
 

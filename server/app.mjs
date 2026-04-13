@@ -31,6 +31,10 @@ export function createApp(options = {}) {
   const pool = createPool(useBlobs ? { connectionLimit: 3 } : {});
   const app = express();
 
+  if (process.env.RENDER) {
+    app.set('trust proxy', 1);
+  }
+
   /**
    * Netlify rewrites `/api/*` → this function, but the request path can arrive as
    * `/.netlify/functions/api/...` so Express would not match `/api/...` routes.

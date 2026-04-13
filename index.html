@@ -3,10 +3,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- voltz-api-origin: set only to override API base. Empty = auto (see api.ts). -->
+    <!-- voltz-api-origin: override API base (e.g. https://your-api.onrender.com). Empty = VITE_API_URL at build or /api proxy in dev. -->
     <meta name="voltz-api-origin" content="" />
-    <!-- When the custom domain does not yet route /api to Netlify, API calls use this host (CORS is open on the API). Clear to force same-origin /api only. -->
-    <meta name="voltz-api-fallback-origin" content="https://voltz-supply.netlify.app" />
+    <!-- Optional: only if /api on this host still returns the SPA (DNS not on Netlify). Cross-origin needs connect-src for that URL in your CSP — prefer fixing DNS so /api is same-origin. -->
+    <meta name="voltz-api-fallback-origin" content="" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Voltz Industrial Supply | Industrial Electrical Components & Automation Equipment</title>
     <meta name="description" content="Voltz Industrial Supply — Your trusted source for industrial electrical components, automation equipment, PLCs, inverters, sensors, and control systems. Competitive pricing & fast shipping worldwide." />

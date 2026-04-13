@@ -82,8 +82,8 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
     if (e instanceof TypeError) {
       const hint =
         base === ''
-          ? ' Start the API (npm run dev:api) and use the Vite dev server (npm run dev:full), or open /api/health on your deployed host.'
-          : ' Cross-origin: ensure the API allows CORS; check CSP connect-src and ad blockers.';
+          ? ' Start the API (npm run dev:api) and use npm run dev:full, or open /api/health on your deployed host (JSON).'
+          : ' Cross-origin fetch blocked? Your page CSP connect-src must include this API host, or use same-origin /api (clear voltz-api-fallback-origin and attach the domain in Netlify). Check CORS, ad blockers, HTTPS.';
       throw new Error(`Cannot reach the server (${url}).${hint}`);
     }
     throw e;
@@ -180,7 +180,7 @@ export async function getApiHealthDb(): Promise<{
     const crossOrigin = Boolean(base);
     let detail = msg;
     if (isNetwork && crossOrigin) {
-      detail = `${msg}. Check CSP connect-src for your API host, ad blockers, and HTTPS. If you meant same-origin /api only, clear voltz-api-fallback-origin and fix DNS.`;
+      detail = `${msg}. Likely CSP connect-src: allow this API origin, or leave voltz-api-fallback-origin empty and use same-origin /api (Netlify custom domain + DNS). Ad blockers / HTTPS can also cause this.`;
     } else if (isNetwork && !crossOrigin) {
       detail = `${msg}. Start the API (npm run dev:api) and use the Vite dev server, or open the app on Netlify.`;
     }
