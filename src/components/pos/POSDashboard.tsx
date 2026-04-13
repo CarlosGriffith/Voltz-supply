@@ -14,6 +14,7 @@ import {
   type POSQuote, type POSOrder, type POSInvoice, type POSReceipt, type POSRefund, type POSCustomer, type POSQuoteRequest, type POSLineItem,
   INVOICE_STATUS_PAID, INVOICE_STATUS_UNPAID, normalizeInvoiceStatus,
 } from '@/lib/posData';
+import { POS_PAGE_MAX } from '@/components/pos/posPageChrome';
 
 interface POSDashboardProps {
   quotes: POSQuote[];
@@ -312,11 +313,11 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className={`${POS_PAGE_MAX} space-y-6`}>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#1a2332]">Analytics Dashboard</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Analytics Dashboard</h2>
           <p className="text-sm text-gray-500 mt-1">Real-time business intelligence & performance metrics</p>
         </div>
         <div className="flex items-center gap-2">

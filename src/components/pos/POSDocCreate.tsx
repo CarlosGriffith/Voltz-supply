@@ -13,6 +13,7 @@ import {
   POS_DEFAULT_VISITOR_CUSTOMER_NAME,
   gctPercentForCalculation,
   taxAmountFromSubtotalAndGctPercent,
+  cn,
 } from '@/lib/utils';
 import { resolveMediaUrl } from '@/lib/mediaUrl';
 
@@ -33,6 +34,7 @@ import {
   parseWebsiteQuoteRequestLines,
   categorySlugForWebsiteLine,
 } from '@/lib/websiteQuoteRequestParse';
+import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
 type DocType = 'quote' | 'order' | 'invoice';
 
@@ -755,7 +757,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   if (loading) return <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-3 border-gray-200 border-t-[#e31e24] rounded-full animate-spin" /></div>;
 
   return (
-    <div className="space-y-6">
+    <div className={`${POS_PAGE_MAX} space-y-6`}>
       {/* Website Quote Request Info Banner */}
       {isFromWebsite && prefill && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
@@ -824,7 +826,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-xl font-bold text-[#1a2332]">{editDoc ? 'Review' : 'Create'} {typeLabel}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">{editDoc ? 'Review' : 'Create'} {typeLabel}</h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <button
@@ -850,12 +852,13 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         {/* Left: Product Search + Items */}
         <div className="lg:col-span-2 space-y-4">
           {/* Product Search */}
+          <div className={POS_SEARCH_CARD}>
           <div ref={searchRef} className="relative flex gap-2 items-stretch">
             <div className="relative flex-1 min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
               <input type="text" value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setShowSearch(true); }}
                 onFocus={() => setShowSearch(true)}
-                className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl text-sm focus:border-[#e31e24] focus:ring-2 focus:ring-[#e31e24]/10 outline-none"
+                className={cn(POS_QUICK_SEARCH_INPUT, 'pl-10 pr-4 py-3 rounded-lg')}
                 placeholder="Search products by name, barcode, part number, description..." />
             </div>
             {searchQuery.trim() ? (
@@ -868,7 +871,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
               </button>
             ) : null}
             {showSearch && searchResults.length > 0 && (
-              <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-80 overflow-y-auto">
+              <div className="absolute z-50 left-0 right-0 top-full mt-2 bg-white border border-gray-200 rounded-xl shadow-xl max-h-80 overflow-y-auto">
                 {searchResults.map(p => (
                   <button key={p.id} onClick={() => { setSelectedProduct(p); addItem(p); }}
                     className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-gray-50 border-b border-gray-50 last:border-0">
@@ -892,9 +895,10 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             )}
 
           </div>
+          </div>
 
           {/* Line Items Table */}
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className={`${POS_SURFACE_RAISED} overflow-hidden`}>
             <div className="bg-[#1a2332] text-white px-4 py-3 grid grid-cols-12 gap-2 text-xs font-semibold uppercase tracking-wider">
               <div className="col-span-5">Product</div>
               <div className="col-span-2 text-center">Qty</div>
@@ -980,7 +984,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           </div>
 
           {/* Totals */}
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className={`${POS_SURFACE_RAISED} p-4`}>
             <div className="flex justify-end">
               <div className="w-72 space-y-2">
                 <div className="flex justify-between text-sm"><span className="text-gray-500">Subtotal</span><span className="font-semibold text-[#1a2332]">${fmtCurrency(subtotal)}</span></div>
@@ -1013,7 +1017,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         {/* Right: Customer + Message from Customer */}
         <div className="space-y-4">
           {/* Customer Section */}
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className={`${POS_SURFACE_RAISED} p-4`}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold text-[#1a2332] flex items-center gap-2"><User className="w-4 h-4" /> Customer</h3>
               {/* New / Existing Customer Badge */}
@@ -1089,12 +1093,12 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           </div>
 
           {/* Message from Customer */}
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className={`${POS_SURFACE_RAISED} p-4`}>
             <h3 className="text-sm font-bold text-[#1a2332] mb-2 flex items-center gap-2">
               <MessageSquare className="w-4 h-4" /> Message from Customer
             </h3>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none" placeholder="Customer's message or special instructions..." />
+              className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm resize-none bg-gray-50/70 focus:bg-white transition-colors" placeholder="Customer's message or special instructions..." />
           </div>
 
         </div>

@@ -13,6 +13,7 @@ import POSCheckout from '@/components/pos/POSCheckout';
 import { printDocument, generateEmailHTML } from '@/components/pos/POSPrintTemplate';
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from '@/components/pos/quotationHtml';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
+import { POS_PAGE_SHELL, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
 import { getApiHealthDb } from '@/lib/api';
 import { broadcastCMSUpdate } from '@/lib/cmsCache';
@@ -70,6 +71,14 @@ import { CMSNotificationProvider, useCMSNotification } from '@/contexts/CMSNotif
 
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/6995573664728a165adc7a9f_1772110039178_7206a7df.png';
+
+/** `<th>` count in first header row — keeps column widths stable on first paint (no layout flash). */
+const POS_TABLE_COLS_DOC: Record<'quote' | 'order' | 'invoice' | 'receipt', number> = {
+  quote: 7,
+  order: 6,
+  invoice: 6,
+  receipt: 8,
+};
 
 // ─── Section Row (from original) ───
 const SectionRow: React.FC<{
@@ -1449,14 +1458,14 @@ const CMSDashboardInner: React.FC = () => {
           });
 
     return (
-      <div>
+      <div className={POS_PAGE_SHELL}>
         {!embed && (
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
             <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <h2 className="text-2xl font-bold text-[#1a2332]">{label}</h2>
+            <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">{label}</h2>
           </div>
           {canCreate && (
             <button onClick={() => {
@@ -1474,17 +1483,18 @@ const CMSDashboardInner: React.FC = () => {
         </div>
         )}
         {!embed && setSearchValue && (
-          <div className="flex flex-wrap items-center gap-2 mb-4">
+          <div className={POS_SEARCH_CARD}>
+            <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-0 sm:max-w-xl">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="text"
                 value={searchValue}
                 onChange={(e) => setSearchValue(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm"
+                className={POS_QUICK_SEARCH_INPUT}
                 placeholder={
                   docType === 'receipt'
-                    ? 'Search by customer, email, phone, product, receipt #, invoice #, status, payment type, or payment method'
+                    ? 'Search by customer, email, phone, product, receipt #, invoice #, status, or payment method'
                     : docType === 'invoice'
                       ? 'Search by customer, email, phone, product, invoice #, receipt #, or status'
                       : `Search ${label.toLowerCase()} by customer, email, phone, product, ${label.slice(0, -1).toLowerCase()} #, or status`
@@ -1495,16 +1505,21 @@ const CMSDashboardInner: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setSearchValue('')}
-                className="shrink-0 px-3 py-2 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+                className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50"
               >
                 Clear
               </button>
             ) : null}
+            </div>
           </div>
         )}
-        <Table>
+        <Table
+          key={`pos-doc-${docType}-${embed ? 'embed' : 'page'}`}
+          variant="pos"
+          resizable={{ storageKey: `pos-doc-${docType}`, columnCount: POS_TABLE_COLS_DOC[docType] }}
+        >
           <TableHeader>
-            <TableRow className="hover:bg-transparent">
+            <TableRow className="hover:!bg-transparent">
               <TableHead
                 className={
                   docType === 'receipt' ? 'min-w-[11rem] !pr-0' : undefined
@@ -1546,7 +1561,6 @@ const CMSDashboardInner: React.FC = () => {
               {docType === 'receipt' && <TableHead className="text-right">Amount Received</TableHead>}
               <TableHead className="text-center">Status</TableHead>
               {docType === 'quote' && <TableHead>Email Sent</TableHead>}
-              {docType === 'receipt' && <TableHead>Payment Type</TableHead>}
               {docType === 'receipt' && (
                 <TableHead className="!pl-0 -translate-x-2">Payment Method</TableHead>
               )}
@@ -1640,9 +1654,6 @@ const CMSDashboardInner: React.FC = () => {
                       return at ? fmtDate(at) : '—';
                     })()}
                   </TableCell>
-                )}
-                {docType === 'receipt' && (
-                  <TableCell className="text-gray-500 capitalize">{(doc.payment_type || 'full').replace('_', ' ')}</TableCell>
                 )}
                 {docType === 'receipt' && (
                   <TableCell className="text-gray-500 capitalize !pl-0 -translate-x-2">
@@ -1851,7 +1862,7 @@ const CMSDashboardInner: React.FC = () => {
             ))}
             {filteredDocs.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={docType === 'receipt' ? 9 : docType === 'quote' ? 7 : 6} className="h-32 text-center text-slate-400">
+                <TableCell colSpan={docType === 'receipt' ? 8 : docType === 'quote' ? 7 : 6} className="h-32 text-center text-gray-400">
                   {embed
                     ? `No ${label.toLowerCase()} for this customer`
                     : q
@@ -1881,24 +1892,25 @@ const CMSDashboardInner: React.FC = () => {
       return customerText.includes(s) || productText.includes(s) || quoteNum.includes(s);
     });
     return (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       {!embed && (
       <div className="flex items-center gap-2 mb-6">
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold text-[#1a2332]">Website Quote Requests</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Website Quote Requests</h2>
       </div>
       )}
       {!embed && (
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className={POS_SEARCH_CARD}>
+      <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-0 sm:max-w-xl">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
             value={quoteRequestsSearch}
             onChange={(e) => setQuoteRequestsSearch(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm"
+            className={POS_QUICK_SEARCH_INPUT}
             placeholder="Search quote requests by customer, product, or quote #"
           />
         </div>
@@ -1906,11 +1918,12 @@ const CMSDashboardInner: React.FC = () => {
           <button
             type="button"
             onClick={() => setQuoteRequestsSearch('')}
-            className="shrink-0 px-3 py-2 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+            className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50"
           >
             Clear
           </button>
         ) : null}
+      </div>
       </div>
       )}
       <Dialog open={viewQuotePopup != null} onOpenChange={(open) => { if (!open) setViewQuotePopup(null); }}>
@@ -2016,17 +2029,13 @@ const CMSDashboardInner: React.FC = () => {
           )}
         </DialogContent>
       </Dialog>
-      <Table className="table-fixed">
-        <colgroup>
-          <col style={{ width: '18%' }} />
-          <col style={{ width: '24%' }} />
-          <col style={{ width: '9.25rem' }} />
-          <col style={{ width: '7.5rem' }} />
-          <col style={{ width: '15rem' }} />
-          <col style={{ width: '4rem' }} />
-        </colgroup>
+      <Table
+        variant="pos"
+        resizable={{ storageKey: 'pos-quote-requests', columnCount: 6 }}
+        className="table-fixed"
+      >
         <TableHeader>
-          <TableRow className="hover:bg-transparent">
+          <TableRow className="hover:!bg-transparent">
             <TableHead>Customer</TableHead>
             <TableHead className="!pr-2">Product</TableHead>
             <TableHead className="!pl-2 w-[9.25rem]">Date</TableHead>
@@ -2183,7 +2192,7 @@ const CMSDashboardInner: React.FC = () => {
           ))}
           {filteredQrRows.length === 0 && (
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-slate-400">
+              <TableCell colSpan={6} className="h-32 text-center text-gray-400">
                 {embed
                   ? 'No quote requests for this customer'
                   : quoteRequestsSearch.trim()
@@ -2202,7 +2211,7 @@ const CMSDashboardInner: React.FC = () => {
   const renderCustomerHistoryPage = () => {
     if (!selectedCustomer || !customerHistory) {
       return (
-        <div>
+        <div className={POS_PAGE_SHELL}>
           <div className="flex items-center gap-2 mb-6">
             <button
               type="button"
@@ -2214,7 +2223,7 @@ const CMSDashboardInner: React.FC = () => {
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <h2 className="text-2xl font-bold text-[#1a2332]">Customer history</h2>
+            <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customer history</h2>
           </div>
           <p className="text-sm text-gray-500">Open a customer from Customers and choose View History.</p>
         </div>
@@ -2238,7 +2247,7 @@ const CMSDashboardInner: React.FC = () => {
     });
 
     return (
-      <div>
+      <div className={POS_PAGE_SHELL}>
         <div className="flex items-center gap-2 mb-4">
           <button
             type="button"
@@ -2250,10 +2259,10 @@ const CMSDashboardInner: React.FC = () => {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-bold text-[#1a2332]">Customer history</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customer history</h2>
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+        <div className={`${POS_SURFACE_RAISED} p-5 mb-6`}>
           <h3 className="text-lg font-bold text-[#1a2332] mb-3">{c.name}</h3>
           <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
             <p className="text-gray-600">
@@ -2291,7 +2300,7 @@ const CMSDashboardInner: React.FC = () => {
         </div>
 
         <Tabs defaultValue="quote-requests" className="w-full">
-          <TabsList className="flex flex-wrap h-auto gap-1 justify-start bg-gray-100/80 p-1 rounded-lg">
+          <TabsList className="flex flex-wrap h-auto gap-1 justify-start rounded-xl border border-gray-100 bg-white p-1 shadow-sm">
             <TabsTrigger value="quote-requests" className="text-xs sm:text-sm">
               Quote Requests
             </TabsTrigger>
@@ -2345,27 +2354,27 @@ const CMSDashboardInner: React.FC = () => {
   const [showCustForm, setShowCustForm] = useState(false);
 
   const renderCustomers = () => (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-2">
           <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-bold text-[#1a2332]">Customers</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customers</h2>
         </div>
         <button onClick={() => { setCustForm({ name: '', email: '', phone: '', company: '', address: '', notes: '' }); setShowCustForm(true); setSelectedCustomer(null); setCustomerHistory(null); }}
           className="flex items-center gap-2 px-4 py-2 bg-[#e31e24] text-white rounded-lg text-sm font-semibold hover:bg-[#c91a1f]"><Plus className="w-4 h-4" /> New Customer</button>
       </div>
 
       {showCustForm && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+        <div className={`${POS_SURFACE_RAISED} p-5 mb-6`}>
           <h3 className="font-bold text-[#1a2332] mb-4">{selectedCustomer ? 'Edit' : 'New'} Customer</h3>
           <div className="grid sm:grid-cols-2 gap-4 mb-4">
-            <input value={custForm.name} onChange={e => setCustForm({ ...custForm, name: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Name *" />
-            <input value={custForm.phone} onChange={e => setCustForm({ ...custForm, phone: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Phone" />
-            <input value={custForm.email} onChange={e => setCustForm({ ...custForm, email: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Email" />
-            <input value={custForm.company} onChange={e => setCustForm({ ...custForm, company: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Company" />
-            <input value={custForm.address} onChange={e => setCustForm({ ...custForm, address: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm col-span-2" placeholder="Address" />
+            <input value={custForm.name} onChange={e => setCustForm({ ...custForm, name: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Name *" />
+            <input value={custForm.phone} onChange={e => setCustForm({ ...custForm, phone: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Phone" />
+            <input value={custForm.email} onChange={e => setCustForm({ ...custForm, email: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Email" />
+            <input value={custForm.company} onChange={e => setCustForm({ ...custForm, company: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Company" />
+            <input value={custForm.address} onChange={e => setCustForm({ ...custForm, address: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors col-span-2" placeholder="Address" />
           </div>
           <div className="flex gap-2">
             <button onClick={async () => {
@@ -2387,9 +2396,9 @@ const CMSDashboardInner: React.FC = () => {
         </div>
       )}
 
-      <Table>
+      <Table variant="pos" resizable={{ storageKey: 'pos-customers', columnCount: 6 }}>
         <TableHeader>
-          <TableRow className="hover:bg-transparent">
+          <TableRow className="hover:!bg-transparent">
             <TableHead>Name</TableHead>
             <TableHead>Contact</TableHead>
             <TableHead>Company</TableHead>
@@ -2471,7 +2480,7 @@ const CMSDashboardInner: React.FC = () => {
           ))}
           {displayCustomers.length === 0 && (
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-slate-400">No customers yet</TableCell>
+              <TableCell colSpan={6} className="h-32 text-center text-gray-400">No customers yet</TableCell>
             </TableRow>
           )}
         </TableBody>
@@ -2557,21 +2566,21 @@ const CMSDashboardInner: React.FC = () => {
   const renderRefunds = (embed?: { rows: POSRefund[] }) => {
     const rows = embed?.rows ?? refunds;
     return (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       {!embed && (
       <>
       <div className="flex items-center gap-2 mb-6">
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold text-[#1a2332]">Refunds</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Refunds</h2>
       </div>
       <p className="text-sm text-gray-500 mb-4">To create a refund, go to Invoices and click the refund button on a paid invoice.</p>
       </>
       )}
-      <Table>
+      <Table variant="pos" resizable={{ storageKey: 'pos-refunds', columnCount: 7 }}>
         <TableHeader>
-          <TableRow className="hover:bg-transparent">
+          <TableRow className="hover:!bg-transparent">
             <TableHead>Refund No.</TableHead>
             <TableHead>Customer</TableHead>
             <TableHead>Type</TableHead>
@@ -2598,7 +2607,7 @@ const CMSDashboardInner: React.FC = () => {
           ))}
           {rows.length === 0 && (
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={7} className="h-32 text-center text-slate-400">
+              <TableCell colSpan={7} className="h-32 text-center text-gray-400">
                 {embed ? 'No refunds for this customer' : 'No refunds yet'}
               </TableCell>
             </TableRow>
@@ -2613,13 +2622,13 @@ const CMSDashboardInner: React.FC = () => {
   const renderSentEmails = (embed?: { rows: POSSentEmail[] }) => {
     const rows = embed?.rows ?? sentEmails;
     return (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       {!embed && (
       <div className="flex items-center gap-2 mb-6">
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold text-[#1a2332]">Sent Emails</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Sent Emails</h2>
       </div>
       )}
       <Dialog open={sentEmailPreview != null} onOpenChange={(open) => { if (!open) setSentEmailPreview(null); }}>
@@ -2708,9 +2717,9 @@ const CMSDashboardInner: React.FC = () => {
           )}
         </DialogContent>
       </Dialog>
-      <Table>
+      <Table variant="pos" resizable={{ storageKey: 'pos-sent-emails', columnCount: 6 }}>
         <TableHeader>
-          <TableRow className="hover:bg-transparent">
+          <TableRow className="hover:!bg-transparent">
             <TableHead>Recipient</TableHead>
             <TableHead>Subject</TableHead>
             <TableHead>Document</TableHead>
@@ -2745,7 +2754,7 @@ const CMSDashboardInner: React.FC = () => {
           ))}
           {rows.length === 0 && (
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-slate-400">
+              <TableCell colSpan={6} className="h-32 text-center text-gray-400">
                 {embed ? 'No sent emails for this customer' : 'No emails sent yet'}
               </TableCell>
             </TableRow>
@@ -2870,16 +2879,16 @@ const CMSDashboardInner: React.FC = () => {
   };
 
   const renderEmailSettings = () => (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       <div className="flex items-center gap-2 mb-6">
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold text-[#1a2332]">Email Configuration</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Email Configuration</h2>
       </div>
 
       {/* Important notice about how email sending works */}
-      <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
+      <div className="mb-6 rounded-2xl border border-blue-200/90 bg-blue-50/90 p-4 shadow-sm">
         <div className="flex items-start gap-3">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-blue-100">
             <Mail className="w-4 h-4 text-blue-600" />
@@ -2934,17 +2943,17 @@ const CMSDashboardInner: React.FC = () => {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-2xl">
+      <div className={`${POS_SURFACE_RAISED} p-6 max-w-2xl`}>
         <div className="space-y-4">
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-semibold text-[#1a2332] mb-1">SMTP Host</label>
-              <input value={smtpSettings.host} onChange={e => setSmtpSettings({ ...smtpSettings, host: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="email-smtp.us-east-1.amazonaws.com" />
+              <input value={smtpSettings.host} onChange={e => setSmtpSettings({ ...smtpSettings, host: e.target.value })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="email-smtp.us-east-1.amazonaws.com" />
               <p className="text-[11px] text-gray-400 mt-1">e.g. email-smtp.us-east-1.amazonaws.com, smtp.sendgrid.net</p>
             </div>
             <div>
               <label className="block text-sm font-semibold text-[#1a2332] mb-1">Port</label>
-              <input type="number" value={smtpSettings.port} onChange={e => setSmtpSettings({ ...smtpSettings, port: parseInt(e.target.value) || 587 })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+              <input type="number" value={smtpSettings.port} onChange={e => setSmtpSettings({ ...smtpSettings, port: parseInt(e.target.value) || 587 })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" />
               <p className="text-[11px] text-gray-400 mt-1">Usually 587 (TLS) or 465 (SSL)</p>
             </div>
           </div>
@@ -2953,13 +2962,13 @@ const CMSDashboardInner: React.FC = () => {
               <label className="block text-sm font-semibold text-[#1a2332] mb-1">
                 {isAwsSes ? 'SMTP Username (IAM Access Key ID)' : 'SMTP Username'}
               </label>
-              <input value={smtpSettings.username} onChange={e => setSmtpSettings({ ...smtpSettings, username: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder={isAwsSes ? 'AKIA...' : 'username or apikey'} />
+              <input value={smtpSettings.username} onChange={e => setSmtpSettings({ ...smtpSettings, username: e.target.value })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder={isAwsSes ? 'AKIA...' : 'username or apikey'} />
             </div>
             <div>
               <label className="block text-sm font-semibold text-[#1a2332] mb-1">
                 {isAwsSes ? 'SMTP Password' : 'SMTP Password / API Key'}
               </label>
-              <input type="password" value={smtpSettings.password} onChange={e => setSmtpSettings({ ...smtpSettings, password: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder={isAwsSes ? 'SES SMTP password' : 'password or API key'} />
+              <input type="password" value={smtpSettings.password} onChange={e => setSmtpSettings({ ...smtpSettings, password: e.target.value })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder={isAwsSes ? 'SES SMTP password' : 'password or API key'} />
               {isAwsSes && (
                 <p className="text-[11px] text-gray-400 mt-1">SES SMTP password, not the IAM secret key.</p>
               )}
@@ -2968,11 +2977,11 @@ const CMSDashboardInner: React.FC = () => {
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div><label className="block text-sm font-semibold text-[#1a2332] mb-1">From Email</label>
-              <input value={smtpSettings.from_email} onChange={e => setSmtpSettings({ ...smtpSettings, from_email: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="sales@voltzsupply.com" />
+              <input value={smtpSettings.from_email} onChange={e => setSmtpSettings({ ...smtpSettings, from_email: e.target.value })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="sales@voltzsupply.com" />
               <p className="text-[11px] text-gray-400 mt-1">Must be a verified sender email</p>
             </div>
             <div><label className="block text-sm font-semibold text-[#1a2332] mb-1">From Name</label>
-              <input value={smtpSettings.from_name} onChange={e => setSmtpSettings({ ...smtpSettings, from_name: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Voltz Industrial Supply" /></div>
+              <input value={smtpSettings.from_name} onChange={e => setSmtpSettings({ ...smtpSettings, from_name: e.target.value })} className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Voltz Industrial Supply" /></div>
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" checked={smtpSettings.use_tls} onChange={e => setSmtpSettings({ ...smtpSettings, use_tls: e.target.checked })} className="rounded" />
@@ -2989,7 +2998,7 @@ const CMSDashboardInner: React.FC = () => {
       </div>
 
       {/* Test Email Section */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-2xl mt-6">
+      <div className={`${POS_SURFACE_RAISED} p-6 max-w-2xl mt-6`}>
         <h3 className="font-bold text-[#1a2332] mb-3 flex items-center gap-2"><Send className="w-4 h-4 text-blue-600" /> Send Test Email</h3>
         <p className="text-xs text-gray-500 mb-4">Send a test email to verify your settings are working correctly. Make sure to save your settings first.</p>
 
@@ -3011,7 +3020,7 @@ const CMSDashboardInner: React.FC = () => {
             type="email"
             value={testEmailAddr}
             onChange={e => setTestEmailAddr(e.target.value)}
-            className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm"
+            className="flex-1 px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors"
             placeholder="Enter email address for test..."
           />
           <button
@@ -3027,14 +3036,14 @@ const CMSDashboardInner: React.FC = () => {
   );
 
   const renderBillingSettings = () => (
-    <div>
+    <div className={POS_PAGE_SHELL}>
       <div className="flex items-center gap-2 mb-6">
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold text-[#1a2332]">Billing / Invoicing</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Billing / Invoicing</h2>
       </div>
-      <div className="bg-white rounded-xl border border-gray-200 shadow-[0_8px_30px_rgb(0,0,0,0.06)] p-6 max-w-xl">
+      <div className={`${POS_SURFACE_RAISED} p-6 max-w-xl`}>
         <label className="block text-sm font-semibold text-[#1a2332] mb-1">Default GCT (%)</label>
         <p className="text-xs text-gray-500 mb-4">
           Applied when you create new quotes, orders, and invoices in the POS. This percentage is used to calculate GCT on each document.
@@ -3046,7 +3055,7 @@ const CMSDashboardInner: React.FC = () => {
           placeholder="0"
           value={billingTaxRateInput}
           onChange={e => setBillingTaxRateInput(e.target.value)}
-          className={`w-full max-w-xs px-3 py-2 border border-gray-200 rounded-lg text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
+          className={`w-full max-w-xs px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
         />
         <div className="mt-6">
           <button

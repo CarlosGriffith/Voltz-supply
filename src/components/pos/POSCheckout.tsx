@@ -51,12 +51,14 @@ import {
   taxAmountFromSubtotalAndGctPercent,
   roundForGctCalculation,
   RECEIPT_FULL_PAYMENT_TOLERANCE_CENTS,
+  cn,
 } from '@/lib/utils';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { generateEmailHTML } from '@/components/pos/POSPrintTemplate';
 import { buildDocumentPdfBase64 } from '@/components/pos/documentPdf';
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from './quotationHtml';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
 type SourceType = 'quote' | 'order' | 'invoice';
 
@@ -2753,7 +2755,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
     })();
 
   return (
-    <div className="space-y-6">
+    <div className={`${POS_PAGE_MAX} space-y-6`}>
       {receiptPreviewOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={dismissReceiptPreview} />
@@ -2789,13 +2791,14 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-bold">Checkout Center</h2>
+          <h2 className="text-2xl font-bold tracking-tight">Checkout Center</h2>
         </div>
         <p className="text-sm text-white/80 mt-1">
           Search products, or customers by name or Contact # — matching customers show their quotes, orders, and open invoices to add lines and fill customer details. You can also search by document # or line text.
         </p>
       </div>
 
+      <div className={POS_SEARCH_CARD}>
       <div ref={searchRef} className="relative flex gap-2 items-stretch">
         <div className="relative flex-1 min-w-0">
           <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -2807,7 +2810,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             }}
             onFocus={() => setShowSearch(true)}
             placeholder="Product name, barcode, part #, description · Customer name or Contact # · Quote #, order #, invoice #"
-            className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl text-sm placeholder:text-gray-400 focus:border-[#e31e24] focus:ring-2 focus:ring-[#e31e24]/10 outline-none"
+            className={cn(POS_QUICK_SEARCH_INPUT, 'pl-10 pr-4 py-3 rounded-lg placeholder:text-gray-400')}
           />
         </div>
         {searchQuery.trim() ? (
@@ -2983,10 +2986,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           </div>
         )}
       </div>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          <div ref={customerDropdownRef} className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
+          <div ref={customerDropdownRef} className={`${POS_SURFACE_RAISED} px-4 py-3 space-y-2`}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wider leading-none">Customer</p>
                 <button
@@ -3076,7 +3080,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               </div>
             </div>
 
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className={`${POS_SURFACE_RAISED} overflow-hidden`}>
             <div className="px-4 py-3 border-b border-gray-100 font-semibold text-[#1a2332] flex items-center justify-between gap-3 min-w-0">
               <span className="shrink-0">Items</span>
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end">
@@ -3393,7 +3397,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         </div>
 
         <div
-          className="w-full h-fit space-y-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm lg:z-10 lg:max-h-[calc(100vh-5.5rem)] lg:overflow-y-auto lg:self-start lg:sticky lg:top-[4.5rem]"
+          className={`w-full h-fit space-y-4 ${POS_SURFACE_RAISED} p-4 lg:z-10 lg:max-h-[calc(100vh-5.5rem)] lg:overflow-y-auto lg:self-start lg:sticky lg:top-[4.5rem]`}
         >
           <h3 className="font-bold text-[#1a2332]">Payment</h3>
           <div className="text-sm space-y-3">
