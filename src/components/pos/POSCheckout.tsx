@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, Undo2, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
+  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, Undo2, RotateCcw, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
 } from 'lucide-react';
 import { Product } from '@/data/products';
 import { fetchCustomProducts, fetchProductOverrides, fetchConfig, updateProductStockCount } from '@/lib/cmsData';
@@ -3192,26 +3192,26 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                 <span className="text-xs font-normal text-gray-400 shrink-0 tabular-nums">
                   {lineItems.length} line(s)
                 </span>
-                <button
-                  type="button"
-                  onClick={clearAllLineItems}
-                  disabled={saving || lineItems.length === 0}
-                  className="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
-                >
-                  Clear
-                </button>
-                {lineItemsClearUndo ? (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={clearAllLineItems}
+                    disabled={saving || lineItems.length === 0}
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    Clear
+                  </button>
                   <button
                     type="button"
                     onClick={undoClearLineItems}
-                    disabled={saving}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md py-0.5 pl-0.5 pr-1 text-[11px] font-normal text-gray-600 hover:bg-gray-100 hover:text-[#1a2332] disabled:opacity-40"
-                    title="Restore all cleared lines"
+                    disabled={saving || !lineItemsClearUndo}
+                    className="inline-flex items-center justify-center w-8 h-[26px] rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
+                    title={lineItemsClearUndo ? 'Restore all cleared lines' : 'Nothing to undo'}
+                    aria-label={lineItemsClearUndo ? 'Undo clear — restore all cleared lines' : 'Undo clear (nothing to restore)'}
                   >
-                    <Undo2 className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
-                    <span>Undo clear</span>
+                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden />
                   </button>
-                ) : null}
+                </div>
               </div>
             </div>
             <div className="bg-[#1a2332] text-white px-4 py-2">
