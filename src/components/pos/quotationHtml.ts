@@ -137,6 +137,9 @@ export function buildQuotationDocumentHtml(
   const ta = safeNum(props.taxAmount);
   const disc = safeNum(props.discountAmount);
   const isReceipt = props.type === 'receipt';
+  const receiptSettlement = props.receiptSettlementInvoices;
+  const showReceiptSettlement =
+    isReceipt && Array.isArray(receiptSettlement) && receiptSettlement.length > 1;
 
   const rows = lineItems
     .map((item) => {
@@ -490,6 +493,29 @@ export function buildQuotationDocumentHtml(
         ${ta > 0 ? `<tr><td style="padding:3px 0;text-align:right">Total GCT (${tr}%):</td><td style="padding:3px 0;text-align:right">${fmtCurrency(ta)}</td></tr>` : ''}
         ${disc > 0 ? `<tr><td style="padding:3px 0;text-align:right">Discount:</td><td style="padding:3px 0;text-align:right">-${fmtCurrency(disc)}</td></tr>` : ''}
         <tr><td style="padding:6px 0 3px;text-align:right;font-size:12px;font-weight:700;border-top:${bw} solid ${NAVY}"><strong>Total Amount</strong></td><td style="padding:6px 0 3px;text-align:right;font-size:12px;font-weight:700;border-top:${bw} solid ${NAVY}"><strong>$${fmtCurrency(props.total)}</strong></td></tr>
+        ${
+          showReceiptSettlement
+            ? receiptSettlement!
+                .map((row, idx) => {
+                  const invLabel = esc(String(row.invoiceNumber || 'Invoice'));
+                  const ord = row.orderNumber ? ` · Order ${esc(String(row.orderNumber))}` : '';
+                  const meta =
+                    idx > 0
+                      ? `<div style="font-size:8px;line-height:1.35;margin-top:4px;color:#000;opacity:0.95;text-align:right">${[
+                          row.customerName,
+                          row.customerEmail,
+                          row.customerPhone,
+                        ]
+                          .filter((x) => x && String(x).trim())
+                          .map((x) => esc(String(x).trim()))
+                          .join(' · ')}</div>`
+                      : '';
+                  return `<tr><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>${invLabel}</strong>${ord}<br/><span style="font-size:8px;font-weight:400">Document total</span></td><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>$${fmtCurrency(safeNum(row.documentTotal))}</strong>${meta}</td></tr>
+                  <tr><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">Applied on this receipt</td><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">$${fmtCurrency(safeNum(row.amountAppliedThisReceipt))}</td></tr>`;
+                })
+                .join('')
+            : ''
+        }
         ${
           isReceipt
             ? `<tr><td style="padding:5px 0 2px;text-align:right;font-size:16px;font-weight:700;line-height:1.2"><strong>Amount Received</strong></td><td style="padding:5px 0 2px;text-align:right;font-size:16px;font-weight:700;line-height:1.2"><strong>$${fmtCurrency(safeNum(props.amountReceivedTender ?? props.amountPaid))}</strong></td></tr>`

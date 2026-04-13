@@ -33,4 +33,14 @@ export interface PrintDocProps {
   validUntil?: string;
   refundType?: string;
   reason?: string;
+  /** Combined multi-invoice receipt: per-invoice totals and amount applied from this receipt. */
+  receiptSettlementInvoices?: {
+    invoiceNumber: string;
+    documentTotal: number;
+    amountAppliedThisReceipt: number;
+    orderNumber?: string;
+    customerName?: string;
+    customerEmail?: string;
+    customerPhone?: string;
+  }[];
 }

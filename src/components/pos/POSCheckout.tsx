@@ -29,9 +29,11 @@ import {
   sendEmail,
   invoiceIsFullyPaid,
   invoiceIsOpenBalance,
+  normalizeInvoiceStatus,
   INVOICE_STATUS_UNPAID,
   INVOICE_STATUS_PAID,
   INVOICE_STATUS_PARTIALLY_PAID,
+  INVOICE_STATUS_REFUNDED,
 } from '@/lib/posData';
 import { resolveMediaUrl } from '@/lib/mediaUrl';
 import { useCMSNotification } from '@/contexts/CMSNotificationContext';
@@ -747,6 +749,17 @@ function shouldUseMultiStreamCheckout(streams: CheckoutStreamSpec[]): boolean {
   return streams.length > 1;
 }
 
+/** True when POS was opened from a doc that matches this cart stream (single-stream checkout). */
+function checkoutNavMatchesStreamSpec(
+  nav: { sourceType: SourceType; sourceDocId: string } | null | undefined,
+  spec: CheckoutStreamSpec
+): boolean {
+  if (!nav || !spec.source) return false;
+  return (
+    nav.sourceType === spec.source.sourceType && String(nav.sourceDocId) === String(spec.source.sourceDocId)
+  );
+}
+
 /** Standalone checkout: quote/order still unlinked, or invoice # on lines → persist against that invoice when open. */
 function inferStandalonePersistSource(
   spec: CheckoutStreamSpec,
@@ -812,8 +825,9 @@ function computeStreamFiscalTotals(
 }
 
 /**
- * Remaining balance on an open invoice for this stream, or null if this stream is not paying an existing open invoice
- * (e.g. direct / unlinked quote creating a new invoice).
+ * Remaining AR on the linked invoice for this stream (for waterfall caps), or null if not paying an existing invoice
+ * (e.g. direct / new quote). Uses **numeric** balance only — not `status` — so excess still flows when status is stale;
+ * refunded invoices are excluded.
  */
 function streamRemainingBalanceIfOpenInvoice(
   spec: CheckoutStreamSpec,
@@ -822,24 +836,27 @@ function streamRemainingBalanceIfOpenInvoice(
   invoices: POSInvoice[]
 ): number | null {
   if (spec.key === 'direct') return null;
+  const remFor = (inv: POSInvoice | undefined): number | null => {
+    if (!inv) return null;
+    if (normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED) return null;
+    const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
+    return rem > 1e-6 ? rem : null;
+  };
   if (spec.key.startsWith('invoice:')) {
     const inv = invoices.find((x) => String(x.id) === spec.key.slice(8));
-    if (!inv || !invoiceIsOpenBalance(inv)) return null;
-    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+    return remFor(inv);
   }
   if (spec.key.startsWith('quote:')) {
     const q = quotes.find((x) => String(x.id) === spec.key.slice(6));
     if (!q?.invoice_id || String(q.invoice_id).trim() === '') return null;
     const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
-    if (!inv || !invoiceIsOpenBalance(inv)) return null;
-    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+    return remFor(inv);
   }
   if (spec.key.startsWith('order:')) {
     const o = orders.find((x) => String(x.id) === spec.key.slice(6));
     if (!o?.invoice_id || String(o.invoice_id).trim() === '') return null;
     const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
-    if (!inv || !invoiceIsOpenBalance(inv)) return null;
-    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+    return remFor(inv);
   }
   return null;
 }
@@ -975,6 +992,7 @@ function sortCheckoutStreamSpecsForPaymentWaterfall(
 /**
  * Apply store credit, then tender, to streams in array order (after {@link sortCheckoutStreamSpecsForPaymentWaterfall}).
  * `streamCaps` = max each stream can absorb (remaining balance on invoice, or fiscal total for new docs).
+ * Whole-cent math so excess reliably reaches the next stream (avoids float drift on `due[i]`).
  */
 function allocatePaymentAcrossStreamsOldestFirst(
   streamCaps: number[],
@@ -982,23 +1000,26 @@ function allocatePaymentAcrossStreamsOldestFirst(
   tenderAmt: number
 ): { perStream: number[]; creditParts: number[]; tenderParts: number[] } {
   const n = streamCaps.length;
-  const due = streamCaps.map((t) => Math.max(0, num(t)));
-  const creditParts = Array.from({ length: n }, () => 0);
-  let credLeft = num(creditApplied);
+  const due = streamCaps.map((t) => Math.max(0, moneyToCents(t)));
+  const creditPartsC = Array.from({ length: n }, () => 0);
+  let credLeft = moneyToCents(creditApplied);
   for (let i = 0; i < n; i++) {
     const take = Math.min(credLeft, due[i]);
-    creditParts[i] = take;
+    creditPartsC[i] = take;
     due[i] -= take;
     credLeft -= take;
   }
-  const tenderParts = Array.from({ length: n }, () => 0);
-  let tenderLeft = num(tenderAmt);
+  const tenderPartsC = Array.from({ length: n }, () => 0);
+  let tenderLeft = moneyToCents(tenderAmt);
   for (let i = 0; i < n; i++) {
     const take = Math.min(tenderLeft, due[i]);
-    tenderParts[i] = take;
+    tenderPartsC[i] = take;
     due[i] -= take;
     tenderLeft -= take;
   }
+  const toD = (c: number) => c / 100;
+  const creditParts = creditPartsC.map(toD);
+  const tenderParts = tenderPartsC.map(toD);
   const perStream = creditParts.map((c, i) => c + tenderParts[i]);
   return { perStream, creditParts, tenderParts };
 }
@@ -2378,135 +2399,116 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       const allocationThisCheckout = num(creditApplied) + num(tenderAmt);
       const overpayToStoreCredit = Math.max(0, allocationThisCheckout - safeAmountDue);
 
-      // Persistence: one invoice+order chain per unlinked document stream when the cart mixes them; otherwise a single chain.
-      let persistResults: Array<{ invoice: POSInvoice | null; orderId?: string }> = [];
+      // Persistence: one invoice+order chain per cart stream when multiple docs are settled; payment waterfalls oldest-first.
+      // Important: do not branch on navigation `source` alone — opening checkout from one doc while the cart tags lines
+      // to multiple invoices must still run the multi-stream path or excess tender never reaches the second invoice.
+      let persistResults: Array<{ invoice: POSInvoice | null; orderId?: string; streamAllocation?: number }> = [];
       let perStreamAllocations: number[] | null = null;
       /** Set for unlinked multi-stream checkout: totals and INV-ordered waterfall (for combined receipt `payment_type`). */
       let multiStreamSettlement: { streamTotals: number[]; perStreamAlloc: number[] } | null = null;
 
-      if (source) {
-        persistResults = [
-          await persistCheckoutDocuments({
-            source,
-            itemsPayload,
+      let invoicesForPayment = invoices;
+      try {
+        const fresh = await fetchInvoices();
+        if (Array.isArray(fresh)) {
+          const ids = new Set(fresh.map((i) => String(i.id)));
+          invoicesForPayment = [...fresh, ...invoices.filter((i) => !ids.has(String(i.id)))];
+        }
+      } catch (e) {
+        console.error('fetchInvoices before checkout', e);
+      }
+      const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders, invoicesForPayment);
+      if (shouldUseMultiStreamCheckout(specs)) {
+        const specsOrdered = sortCheckoutStreamSpecsForPaymentWaterfall(specs, quotes, orders, invoicesForPayment);
+        const fiscals = specsOrdered.map((s) =>
+          computeStreamFiscalTotals(s.lines, gctPercentEffective, subtotal, taxAmount, discountAmount)
+        );
+        let invoicesForPersist = invoicesForPayment;
+        const streamCaps = specsOrdered.map((s, i) =>
+          streamOutstandingWaterfallCap(s, fiscals[i], quotes, orders, invoicesForPersist)
+        );
+        const streamTotals = fiscals.map((f) => f.documentTotal);
+        const wf = allocatePaymentAcrossStreamsOldestFirst(streamCaps, creditApplied, tenderAmt);
+        const perStream = wf.perStream;
+        perStreamAllocations = perStream;
+        multiStreamSettlement = { streamTotals, perStreamAlloc: perStream };
+        for (let i = 0; i < specsOrdered.length; i++) {
+          const sp = specsOrdered[i];
+          const f = fiscals[i];
+          const r = await persistCheckoutDocuments({
+            source: sp.source,
+            itemsPayload: lineItemsForPersistence(sp.lines),
             customerId,
             customerName,
             customerEmail,
             customerPhone,
-            subtotal,
+            subtotal: f.subtotal,
             taxRate: gctPercentEffective,
-            taxAmount,
-            discountAmount,
-            documentTotal,
-            allocationThisCheckout,
-            amountDueForPayment,
+            taxAmount: f.taxAmount,
+            discountAmount: f.discountAmount,
+            documentTotal: f.documentTotal,
+            allocationThisCheckout: perStreamAllocations[i] ?? 0,
+            amountDueForPayment: streamCaps[i] ?? f.documentTotal,
             quotes,
             orders,
-            invoices,
-          }),
-        ];
+            invoices: invoicesForPersist,
+          });
+          if (r.invoice?.id) {
+            const saved = r.invoice;
+            invoicesForPersist = invoicesForPersist.map((inv) =>
+              String(inv.id) === String(saved.id) ? { ...inv, ...saved } : inv
+            );
+          }
+          persistResults.push({
+            ...r,
+            streamAllocation: num(perStreamAllocations![i] ?? 0),
+          });
+        }
+      } else if (specs.length === 1) {
+        const spec = specs[0];
+        const inferred = inferStandalonePersistSource(spec, quotes, orders, invoicesForPayment);
+        const f = computeStreamFiscalTotals(spec.lines, gctPercentEffective, subtotal, taxAmount, discountAmount);
+        const streamCap = streamOutstandingWaterfallCap(spec, f, quotes, orders, invoicesForPayment);
+        const persistSource = checkoutNavMatchesStreamSpec(source, spec) ? source : inferred;
+        const r1 = await persistCheckoutDocuments({
+          source: persistSource,
+          itemsPayload: lineItemsForPersistence(spec.lines),
+          customerId,
+          customerName,
+          customerEmail,
+          customerPhone,
+          subtotal: f.subtotal,
+          taxRate: gctPercentEffective,
+          taxAmount: f.taxAmount,
+          discountAmount: f.discountAmount,
+          documentTotal: f.documentTotal,
+          allocationThisCheckout,
+          amountDueForPayment: streamCap,
+          quotes,
+          orders,
+          invoices: invoicesForPayment,
+        });
+        persistResults = [{ ...r1, streamAllocation: allocationThisCheckout }];
       } else {
-        let invoicesForPayment = invoices;
-        try {
-          const fresh = await fetchInvoices();
-          if (Array.isArray(fresh)) {
-            const ids = new Set(fresh.map((i) => String(i.id)));
-            invoicesForPayment = [...fresh, ...invoices.filter((i) => !ids.has(String(i.id)))];
-          }
-        } catch (e) {
-          console.error('fetchInvoices before checkout', e);
-        }
-        const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders, invoicesForPayment);
-        if (shouldUseMultiStreamCheckout(specs)) {
-          const specsOrdered = sortCheckoutStreamSpecsForPaymentWaterfall(specs, quotes, orders, invoicesForPayment);
-          const fiscals = specsOrdered.map((s) =>
-            computeStreamFiscalTotals(s.lines, gctPercentEffective, subtotal, taxAmount, discountAmount)
-          );
-          let invoicesForPersist = invoicesForPayment;
-          const streamCaps = specsOrdered.map((s, i) =>
-            streamOutstandingWaterfallCap(s, fiscals[i], quotes, orders, invoicesForPersist)
-          );
-          const streamTotals = fiscals.map((f) => f.documentTotal);
-          const wf = allocatePaymentAcrossStreamsOldestFirst(streamCaps, creditApplied, tenderAmt);
-          const perStream = wf.perStream;
-          perStreamAllocations = perStream;
-          multiStreamSettlement = { streamTotals, perStreamAlloc: perStream };
-          for (let i = 0; i < specsOrdered.length; i++) {
-            const sp = specsOrdered[i];
-            const f = fiscals[i];
-            const r = await persistCheckoutDocuments({
-              source: sp.source,
-              itemsPayload: lineItemsForPersistence(sp.lines),
-              customerId,
-              customerName,
-              customerEmail,
-              customerPhone,
-              subtotal: f.subtotal,
-              taxRate: gctPercentEffective,
-              taxAmount: f.taxAmount,
-              discountAmount: f.discountAmount,
-              documentTotal: f.documentTotal,
-              allocationThisCheckout: perStreamAllocations[i] ?? 0,
-              amountDueForPayment: streamCaps[i] ?? f.documentTotal,
-              quotes,
-              orders,
-              invoices: invoicesForPersist,
-            });
-            if (r.invoice?.id) {
-              const saved = r.invoice;
-              invoicesForPersist = invoicesForPersist.map((inv) =>
-                String(inv.id) === String(saved.id) ? { ...inv, ...saved } : inv
-              );
-            }
-            persistResults.push(r);
-          }
-        } else if (specs.length === 1) {
-          const spec = specs[0];
-          const inferred = inferStandalonePersistSource(spec, quotes, orders, invoicesForPayment);
-          const f = computeStreamFiscalTotals(spec.lines, gctPercentEffective, subtotal, taxAmount, discountAmount);
-          const streamCap = streamOutstandingWaterfallCap(spec, f, quotes, orders, invoicesForPayment);
-          persistResults = [
-            await persistCheckoutDocuments({
-              source: inferred,
-              itemsPayload: lineItemsForPersistence(spec.lines),
-              customerId,
-              customerName,
-              customerEmail,
-              customerPhone,
-              subtotal: f.subtotal,
-              taxRate: gctPercentEffective,
-              taxAmount: f.taxAmount,
-              discountAmount: f.discountAmount,
-              documentTotal: f.documentTotal,
-              allocationThisCheckout,
-              amountDueForPayment: streamCap,
-              quotes,
-              orders,
-              invoices: invoicesForPayment,
-            }),
-          ];
-        } else {
-          persistResults = [
-            await persistCheckoutDocuments({
-              source: null,
-              itemsPayload,
-              customerId,
-              customerName,
-              customerEmail,
-              customerPhone,
-              subtotal,
-              taxRate: gctPercentEffective,
-              taxAmount,
-              discountAmount,
-              documentTotal,
-              allocationThisCheckout,
-              amountDueForPayment,
-              quotes,
-              orders,
-              invoices: invoicesForPayment,
-            }),
-          ];
-        }
+        const r2 = await persistCheckoutDocuments({
+          source: source ?? null,
+          itemsPayload,
+          customerId,
+          customerName,
+          customerEmail,
+          customerPhone,
+          subtotal,
+          taxRate: gctPercentEffective,
+          taxAmount,
+          discountAmount,
+          documentTotal,
+          allocationThisCheckout,
+          amountDueForPayment,
+          quotes,
+          orders,
+          invoices: invoicesForPayment,
+        });
+        persistResults = [{ ...r2, streamAllocation: allocationThisCheckout }];
       }
 
       const invoice = persistResults[0]?.invoice ?? null;
@@ -2623,11 +2625,10 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           noteParts.push(`${tenderMethodLabel(paymentMethod)} ${fmtMoney(tenderAmt)}`);
         }
         let combinedBalanceDueCents = 0;
-        for (let pi = 0; pi < persistResults.length; pi++) {
-          const pr = persistResults[pi];
+        for (const pr of persistResults) {
           if (!pr.invoice) continue;
-          const inv = pr.invoice!;
-          const alloc = perStreamAllocations ? perStreamAllocations[pi]! : allocationThisCheckout;
+          const inv = pr.invoice;
+          const alloc = num(pr.streamAllocation ?? allocationThisCheckout);
           combinedBalanceDueCents += balanceDueBeforePaymentCents(inv, alloc);
         }
         const payType = receiptPaymentTypeFromReceivedVsCombinedBalanceCents(
@@ -2647,12 +2648,26 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           items: itemsPayload,
           total: combinedSettlementTotal,
           notes: noteParts.join(' — '),
-          invoice_links: withInv.map((pr, pi) => ({
+          invoice_links: withInv.map((pr) => ({
             invoice_id: pr.invoice!.id,
-            amount_applied: perStreamAllocations ? perStreamAllocations[pi]! : allocationThisCheckout,
+            amount_applied: num(pr.streamAllocation ?? 0),
           })),
         });
         if (!rec) throw new Error('Receipt could not be saved');
+
+        const receiptSettlementInvoices = withInv.map((pr) => {
+          const inv = pr.invoice!;
+          const ord = pr.orderId ? orders.find((x) => String(x.id) === String(pr.orderId)) : undefined;
+          return {
+            invoiceNumber: inv.invoice_number,
+            documentTotal: num(inv.total),
+            amountAppliedThisReceipt: num(pr.streamAllocation ?? 0),
+            orderNumber: ord?.order_number,
+            customerName: inv.customer_name,
+            customerEmail: inv.customer_email,
+            customerPhone: inv.customer_phone,
+          };
+        });
 
         const receiptDocHtml = buildQuotationDocumentHtml(
           {
@@ -2675,6 +2690,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             paymentMethod: rec.payment_method,
             notes: rec.notes || '',
             status: rec.status || primaryInv.status,
+            receiptSettlementInvoices,
           },
           loadContactDetails(),
           {
@@ -2706,6 +2722,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           paymentMethod: rec.payment_method,
           notes: rec.notes || '',
           status: rec.status || primaryInv.status,
+          receiptSettlementInvoices,
         };
         await sendReceiptEmail(rec, mailDoc);
       } else {
@@ -2713,7 +2730,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           const pr = persistResults[ridx];
           if (!pr.invoice) continue;
           const inv = pr.invoice!;
-          const allocationForReceipt = perStreamAllocations ? perStreamAllocations[ridx]! : allocationThisCheckout;
+          const allocationForReceipt = num(pr.streamAllocation ?? (perStreamAllocations ? perStreamAllocations[ridx]! : allocationThisCheckout));
           const crPart = creditParts[ridx] ?? 0;
           const tnPart = tenderParts[ridx] ?? 0;
           const owedBeforeCents = balanceDueBeforePaymentCents(inv, allocationForReceipt);
