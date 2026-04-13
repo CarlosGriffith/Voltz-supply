@@ -1031,6 +1031,11 @@ export async function fetchInvoices(): Promise<POSInvoice[]> {
   }
 }
 
+function nMoney(v: unknown): number {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
 export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOptions): Promise<POSInvoice> {
   const data = await apiPost<any>('/api/pos/invoices', {
     id: inv.id || `inv-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
@@ -1045,9 +1050,13 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
     payment_method: inv.payment_method || null,
     delivery_status: inv.delivery_status || 'pending',
     items: inv.items || [],
-    subtotal: inv.subtotal || 0, tax_rate: inv.tax_rate || 0, tax_amount: inv.tax_amount || 0,
-    discount_amount: inv.discount_amount || 0, total: inv.total || 0,
-    amount_paid: inv.amount_paid || 0, notes: inv.notes || '',
+    subtotal: nMoney(inv.subtotal),
+    tax_rate: nMoney(inv.tax_rate),
+    tax_amount: nMoney(inv.tax_amount),
+    discount_amount: nMoney(inv.discount_amount),
+    total: nMoney(inv.total),
+    amount_paid: nMoney(inv.amount_paid),
+    notes: inv.notes || '',
     paid_at: inv.paid_at || null, delivered_at: inv.delivered_at || null,
   });
   assertSavedRow(data, 'invoice');

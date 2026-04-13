@@ -1330,6 +1330,14 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
     invoices,
     paymentOnly = false,
   } = ctx;
+  /** MySQL DECIMAL / JSON often yields strings — never use `+` with raw values (concat bugs e.g. 401 + "350" → "401350"). */
+  const alloc = num(allocationThisCheckout);
+  const docTotal = num(documentTotal);
+  const sub = num(subtotal);
+  const taxAmt = num(taxAmount);
+  const discAmt = num(discountAmount);
+  const taxR = num(taxRate);
+  const amtDue = num(amountDueForPayment);
   const sid = source ? String(source.sourceDocId) : '';
   let invoice: POSInvoice | null = null;
   let orderId: string | undefined;
@@ -1345,15 +1353,15 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_phone: customerPhone,
         customer_type: customerId ? 'registered' : 'visitor',
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
         status:
-          allocationThisCheckout >= amountDueForPayment
+          alloc >= amtDue
             ? 'invoice_generated_paid'
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? 'invoice_generated_partially_paid'
               : 'invoice_generated_unpaid',
         notes: '',
@@ -1371,16 +1379,16 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_email: customerEmail,
         customer_phone: customerPhone,
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
-        amount_paid: allocationThisCheckout,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
+        amount_paid: alloc,
         status:
-          allocationThisCheckout >= amountDueForPayment
+          alloc >= amtDue
             ? INVOICE_STATUS_PAID
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? INVOICE_STATUS_PARTIALLY_PAID
               : INVOICE_STATUS_UNPAID,
         delivery_status: 'pending',
@@ -1408,7 +1416,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         source: { sourceType: 'invoice', sourceDocId: linkedInv.id },
       });
     }
-    const targetAmount = amountDueForPayment;
+    const targetAmount = amtDue;
     const ordNo = await generateDocNumber('order');
     const order = await saveOrder(
       {
@@ -1420,15 +1428,15 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_phone: customerPhone,
         customer_type: customerId ? 'registered' : 'visitor',
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
         status:
-          allocationThisCheckout >= targetAmount
+          alloc >= targetAmount
             ? 'invoice_generated_paid'
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? 'invoice_generated_partially_paid'
               : 'invoice_generated_unpaid',
         notes: entry.notes,
@@ -1447,16 +1455,16 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_email: customerEmail,
         customer_phone: customerPhone,
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
-        amount_paid: allocationThisCheckout,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
+        amount_paid: alloc,
         status:
-          allocationThisCheckout >= targetAmount
+          alloc >= targetAmount
             ? INVOICE_STATUS_PAID
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? INVOICE_STATUS_PARTIALLY_PAID
               : INVOICE_STATUS_UNPAID,
         delivery_status: 'pending',
@@ -1484,7 +1492,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         source: { sourceType: 'invoice', sourceDocId: linkedInv.id },
       });
     }
-    const targetAmount = amountDueForPayment;
+    const targetAmount = amtDue;
     orderId = entry.id;
     const invNo = await generateDocNumber('invoice');
     invoice = await saveInvoice(
@@ -1496,16 +1504,16 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_email: customerEmail,
         customer_phone: customerPhone,
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
-        amount_paid: allocationThisCheckout,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
+        amount_paid: alloc,
         status:
-          allocationThisCheckout >= targetAmount
+          alloc >= targetAmount
             ? INVOICE_STATUS_PAID
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? INVOICE_STATUS_PARTIALLY_PAID
               : INVOICE_STATUS_UNPAID,
         delivery_status: 'pending',
@@ -1522,16 +1530,16 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_phone: customerPhone,
         customer_type: customerId ? 'registered' : 'visitor',
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
         invoice_id: invoice?.id,
         status:
-          allocationThisCheckout >= targetAmount
+          alloc >= targetAmount
             ? 'invoice_generated_paid'
-            : allocationThisCheckout > 0
+            : alloc > 0
               ? 'invoice_generated_partially_paid'
               : 'invoice_generated_unpaid',
       },
@@ -1547,8 +1555,8 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
   }
   if (!entry) throw new Error('Invoice not found — open checkout again from the invoice');
   const prevPaid = num(entry.amount_paid);
-  const newPaid = prevPaid + allocationThisCheckout;
-  const invTotal = paymentOnly ? num(entry.total) : num(documentTotal);
+  const newPaid = prevPaid + alloc;
+  const invTotal = paymentOnly ? num(entry.total) : docTotal;
   const invoiceStatus =
     newPaid <= 0 ? INVOICE_STATUS_UNPAID : newPaid >= invTotal ? INVOICE_STATUS_PAID : INVOICE_STATUS_PARTIALLY_PAID;
   const linkedDocStatus =
@@ -1562,6 +1570,11 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
     invoice = await saveInvoice(
       {
         ...entry,
+        subtotal: num(entry.subtotal),
+        tax_rate: num(entry.tax_rate),
+        tax_amount: num(entry.tax_amount),
+        discount_amount: num(entry.discount_amount),
+        total: num(entry.total),
         customer_id: customerId ?? entry.customer_id,
         customer_name: customerName,
         customer_email: customerEmail,
@@ -1583,11 +1596,11 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
       customer_email: customerEmail,
       customer_phone: customerPhone,
       items: itemsPayload,
-      subtotal,
-      tax_rate: taxRate,
-      tax_amount: taxAmount,
-      discount_amount: discountAmount,
-      total: documentTotal,
+      subtotal: sub,
+      tax_rate: taxR,
+      tax_amount: taxAmt,
+      discount_amount: discAmt,
+      total: docTotal,
       amount_paid: newPaid,
       status: invoiceStatus,
     },
@@ -1604,11 +1617,11 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         customer_phone: customerPhone,
         customer_type: customerId ? 'registered' : 'visitor',
         items: itemsPayload,
-        subtotal,
-        tax_rate: taxRate,
-        tax_amount: taxAmount,
-        discount_amount: discountAmount,
-        total: documentTotal,
+        subtotal: sub,
+        tax_rate: taxR,
+        tax_amount: taxAmt,
+        discount_amount: discAmt,
+        total: docTotal,
         invoice_id: entry.id,
         status: linkedDocStatus,
         notes: entry.notes,
@@ -2374,7 +2387,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       const creditApplied = useStoreCredit ? Math.min(safeStoreCredit, safeAmountDue) : 0;
       const tenderAmt = tenderTotal;
       /** Full allocation (tender in hand + store credit used). Not capped at due — excess is overpayment → store credit. */
-      const allocationThisCheckout = creditApplied + tenderAmt;
+      const allocationThisCheckout = num(creditApplied) + num(tenderAmt);
       const overpayToStoreCredit = Math.max(0, allocationThisCheckout - safeAmountDue);
 
       // Persistence: one invoice+order chain per unlinked document stream when the cart mixes them; otherwise a single chain.
@@ -2411,8 +2424,9 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           const fiscals = specsOrdered.map((s) =>
             computeStreamFiscalTotals(s.lines, gctPercentEffective, subtotal, taxAmount, discountAmount)
           );
+          let invoicesForPersist = invoices;
           const streamCaps = specsOrdered.map((s, i) =>
-            streamOutstandingWaterfallCap(s, fiscals[i], quotes, orders, invoices)
+            streamOutstandingWaterfallCap(s, fiscals[i], quotes, orders, invoicesForPersist)
           );
           const streamTotals = fiscals.map((f) => f.documentTotal);
           const wf = allocatePaymentAcrossStreamsOldestFirst(streamCaps, creditApplied, tenderAmt);
@@ -2423,7 +2437,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             const sp = specsOrdered[i];
             const f = fiscals[i];
             const paymentOnly =
-              specsOrdered.length > 1 && shouldPaymentOnlyPreserveInvoice(sp, quotes, orders, invoices);
+              specsOrdered.length > 1 && shouldPaymentOnlyPreserveInvoice(sp, quotes, orders, invoicesForPersist);
             const r = await persistCheckoutDocuments({
               source: sp.source,
               itemsPayload: lineItemsForPersistence(sp.lines),
@@ -2440,9 +2454,15 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               amountDueForPayment: streamCaps[i] ?? f.documentTotal,
               quotes,
               orders,
-              invoices,
+              invoices: invoicesForPersist,
               paymentOnly,
             });
+            if (r.invoice?.id) {
+              const saved = r.invoice;
+              invoicesForPersist = invoicesForPersist.map((inv) =>
+                String(inv.id) === String(saved.id) ? { ...inv, ...saved } : inv
+              );
+            }
             persistResults.push(r);
           }
         } else if (specs.length === 1) {

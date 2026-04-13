@@ -759,6 +759,11 @@ app.post('/api/pos/orders', async (req, res) => {
 app.post('/api/pos/invoices', async (req, res) => {
   try {
     const inv = req.body;
+    /** JSON can send DECIMAL columns as strings; reject NaN so MySQL never stores concat garbage. */
+    const nm = (v) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x : 0;
+    };
     const id = inv.id || `inv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const cols = [
       'invoice_number',
@@ -794,12 +799,12 @@ app.post('/api/pos/invoices', async (req, res) => {
       inv.payment_method ?? null,
       inv.delivery_status ?? 'pending',
       typeof inv.items === 'string' ? inv.items : JSON.stringify(inv.items || []),
-      inv.subtotal ?? 0,
-      inv.tax_rate ?? 0,
-      inv.tax_amount ?? 0,
-      inv.discount_amount ?? 0,
-      inv.total ?? 0,
-      inv.amount_paid ?? 0,
+      nm(inv.subtotal),
+      nm(inv.tax_rate),
+      nm(inv.tax_amount),
+      nm(inv.discount_amount),
+      nm(inv.total),
+      nm(inv.amount_paid),
       inv.notes ?? '',
       inv.paid_at ?? null,
       inv.delivered_at ?? null,
