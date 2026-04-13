@@ -620,7 +620,7 @@ function expandLineToStreamPieces(
   return out;
 }
 
-/** Invoices referenced on cart lines that already have payment recorded (for “Payment already received” summary). */
+/** Invoices referenced on cart lines that already have payment recorded (for “Payment Received Already” summary). */
 function collectInvoicesWithPriorPaymentFromCheckoutLines(
   lineItems: CheckoutLineItem[],
   quotes: POSQuote[],
@@ -1811,6 +1811,16 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
 
   const searchQ = searchQuery.trim().toLowerCase();
   const docNumbersInLines = useMemo(() => docNumbersInCheckoutLines(lineItems), [lineItems]);
+  /** Distinct Doc No. values (excludes New/Direct) — used to show invoice #s only when multiple docs are on the cart. */
+  const meaningfulCheckoutDocNoCount = useMemo(() => {
+    let c = 0;
+    for (const k of docNumbersInLines) {
+      const t = String(k || '').trim().toLowerCase();
+      if (!t || t === 'new' || t === 'direct') continue;
+      c++;
+    }
+    return c;
+  }, [docNumbersInLines]);
   const checkoutSearchBlockedDocKeys = useMemo(
     () => collectCheckoutSearchBlockedDocKeys(docNumbersInLines, quotes, orders, invoices),
     [docNumbersInLines, quotes, orders, invoices]
@@ -3498,8 +3508,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               {invoicesWithPriorPaymentInCart.length > 0 && (
                 <div className="flex justify-between text-sm gap-2">
                   <span className="text-gray-500">
-                    Payment already received
-                    {invoicesWithPriorPaymentInCart.length > 1
+                    Payment Received Already
+                    {meaningfulCheckoutDocNoCount > 1
                       ? ` (${invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})`
                       : ''}
                   </span>
