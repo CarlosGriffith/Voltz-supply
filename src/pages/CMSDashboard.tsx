@@ -1516,13 +1516,16 @@ const CMSDashboardInner: React.FC = () => {
         <Table
           key={`pos-doc-${docType}-${embed ? 'embed' : 'page'}`}
           variant="pos"
-          resizable={{ storageKey: `pos-doc-${docType}`, columnCount: POS_TABLE_COLS_DOC[docType] }}
+          resizable={{
+            storageKey: docType === 'receipt' ? 'pos-doc-receipt-v2' : `pos-doc-${docType}`,
+            columnCount: POS_TABLE_COLS_DOC[docType],
+          }}
         >
           <TableHeader>
             <TableRow className="hover:!bg-transparent">
               <TableHead
                 className={
-                  docType === 'receipt' ? 'min-w-[11rem] !pr-0' : undefined
+                  docType === 'receipt' ? 'min-w-[11rem]' : undefined
                 }
               >
                 {docType === 'receipt'
@@ -1537,85 +1540,69 @@ const CMSDashboardInner: React.FC = () => {
               </TableHead>
               <TableHead
                 className={
-                  docType === 'receipt' ? 'min-w-[9rem] !pl-0 -translate-x-7' : undefined
+                  docType === 'receipt' ? 'min-w-[9rem]' : undefined
                 }
               >
                 Customer
               </TableHead>
               <TableHead
                 className={
-                  docType === 'receipt' ? 'min-w-[8rem] !pl-0 -translate-x-5' : undefined
+                  docType === 'receipt' ? 'min-w-[8rem]' : undefined
                 }
               >
                 Date
               </TableHead>
-              <TableHead
-                className={
-                  docType === 'receipt'
-                    ? 'text-right !pl-0 !pr-1 -translate-x-7'
-                    : 'text-right'
-                }
-              >
-                {docType === 'receipt' ? 'Invoice Total' : 'Total'}
-              </TableHead>
-              {docType === 'receipt' && <TableHead className="text-right">Amount Received</TableHead>}
+              {docType === 'receipt' ? (
+                <>
+                  <TableHead className="text-left min-w-[9rem]">Payment Method</TableHead>
+                  <TableHead className="text-right tabular-nums">Invoice Total</TableHead>
+                  <TableHead className="text-right">Amount Received</TableHead>
+                </>
+              ) : (
+                <TableHead className="text-right">Total</TableHead>
+              )}
               <TableHead className="text-center">Status</TableHead>
               {docType === 'quote' && <TableHead>Email Sent</TableHead>}
-              {docType === 'receipt' && (
-                <TableHead className="!pl-0 -translate-x-2">Payment Method</TableHead>
-              )}
-              <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2 -translate-x-3" aria-hidden />
+              <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2" aria-hidden />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredDocs.map((doc: any, rowIdx: number) => (
               <TableRow key={doc?.id != null ? String(doc.id) : `${docType}-row-${rowIdx}`}>
                 <TableCell
-                  className={`font-semibold text-[#1a2332] ${docType === 'receipt' ? 'min-w-[11rem] !pr-0' : ''}`}
+                  className={`font-semibold text-[#1a2332] ${docType === 'receipt' ? 'min-w-[11rem]' : ''}`}
                 >
                   {doc[numKey]}
                 </TableCell>
                 <TableCell
-                  className={`text-gray-600 ${docType === 'receipt' ? 'min-w-[9rem] !pl-0 -translate-x-7' : ''}`}
+                  className={`text-gray-600 ${docType === 'receipt' ? 'min-w-[9rem]' : ''}`}
                 >
                   {doc.customer_name || 'Visitor'}
                 </TableCell>
                 <TableCell
                   className={
                     docType === 'receipt'
-                      ? 'text-gray-500 min-w-[8rem] !pl-0 -translate-x-5'
+                      ? 'text-gray-500 min-w-[8rem] whitespace-nowrap'
                       : 'text-gray-500'
                   }
                 >
-                  {docType === 'receipt' ? (
-                    (() => {
-                      const s = fmtDate(doc.created_at);
-                      if (!s) return '—';
-                      const i = s.indexOf(' ');
-                      if (i <= 0) return s;
-                      return (
-                        <span className="inline-block leading-snug">
-                          <span className="block whitespace-nowrap">{s.slice(0, i)}</span>
-                          <span className="block whitespace-nowrap">{s.slice(i + 1).trim()}</span>
-                        </span>
-                      );
-                    })()
-                  ) : (
-                    fmtDate(doc.created_at)
-                  )}
+                  {fmtDate(doc.created_at) || '—'}
                 </TableCell>
-                <TableCell
-                  className={
-                    docType === 'receipt'
-                      ? 'text-right font-bold tabular-nums !pl-0 !pr-1 -translate-x-7'
-                      : 'text-right font-bold tabular-nums'
-                  }
-                >
-                  {fmtMoney(doc.total)}
-                </TableCell>
-                {docType === 'receipt' && (
+                {docType === 'receipt' ? (
+                  <>
+                    <TableCell className="text-gray-500 capitalize min-w-[9rem]">
+                      {(doc.payment_method || '—').replace('_', ' ')}
+                    </TableCell>
+                    <TableCell className="text-right font-bold tabular-nums">
+                      {fmtMoney(doc.total)}
+                    </TableCell>
+                    <TableCell className="text-right font-bold tabular-nums">
+                      {fmtMoney((doc as POSReceipt).amount_paid)}
+                    </TableCell>
+                  </>
+                ) : (
                   <TableCell className="text-right font-bold tabular-nums">
-                    {fmtMoney((doc as POSReceipt).amount_paid)}
+                    {fmtMoney(doc.total)}
                   </TableCell>
                 )}
                 <TableCell className="text-center">
@@ -1655,12 +1642,7 @@ const CMSDashboardInner: React.FC = () => {
                     })()}
                   </TableCell>
                 )}
-                {docType === 'receipt' && (
-                  <TableCell className="text-gray-500 capitalize !pl-0 -translate-x-2">
-                    {(doc.payment_method || '—').replace('_', ' ')}
-                  </TableCell>
-                )}
-                <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle -translate-x-3">
+                <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle">
                   <div className="flex items-center justify-end gap-1">
                     {docType === 'quote' ? (
                       <DropdownMenu>
