@@ -58,8 +58,10 @@ export function getApiBaseUrl(): string {
     if (o) return o.replace(/\/$/, '');
   }
 
-  // Cross-origin fallback to *.netlify.app breaks under strict CSP from a custom domain; prefer same-origin /api.
-  if (shouldUseNetlifyFallbackHost() && !shouldIgnoreViteApiUrlForSameNetlifySite()) {
+  // Custom domains: meta fallback when /api is not routed on the marketing host. Must not be gated by
+  // shouldIgnoreViteApiUrlForSameNetlifySite — if VITE_API_URL points at *.netlify.app we skip the Vite
+  // branch above but still need this fallback (otherwise base stays '' and /api returns the SPA HTML).
+  if (shouldUseNetlifyFallbackHost()) {
     const fb = resolvedNetlifyFallbackOrigin();
     if (fb) return fb;
   }
@@ -158,7 +160,7 @@ export async function getApiHealthDb(): Promise<{
     if (j.code && j.code !== 'ENV_MISSING_PASSWORD') parts.push(`(${j.code})`);
     if (!dbOk && looksLikeHtml) {
       parts.push(
-        'Same-origin /api returned the SPA (HTML) instead of JSON — the hostname you opened is not routing /api to Netlify Functions. Point the domain to Netlify (Domain management + DNS), or rely on voltz-api-fallback-origin in index.html (defaults to https://voltz-supply.netlify.app).'
+        'Same-origin /api returned the SPA (HTML) instead of JSON — this host is not routing /api to Netlify Functions. Point the domain to Netlify (DNS), or set voltz-api-fallback-origin in index.html to your *.netlify.app URL (repo default: https://voltz-supply.netlify.app).'
       );
     } else if (!dbOk && parts.length === 0 && text.trim()) {
       parts.push(text.trim().slice(0, 400));
@@ -178,7 +180,7 @@ export async function getApiHealthDb(): Promise<{
     const crossOrigin = Boolean(base);
     let detail = msg;
     if (isNetwork && crossOrigin) {
-      detail = `${msg}. Remove VITE_API_URL in Netlify (use same-origin /api on your domain). Check ad blockers and HTTPS.`;
+      detail = `${msg}. Check CSP connect-src for your API host, ad blockers, and HTTPS. If you meant same-origin /api only, clear voltz-api-fallback-origin and fix DNS.`;
     } else if (isNetwork && !crossOrigin) {
       detail = `${msg}. Start the API (npm run dev:api) and use the Vite dev server, or open the app on Netlify.`;
     }

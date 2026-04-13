@@ -5,8 +5,8 @@
     <meta charset="UTF-8" />
     <!-- voltz-api-origin: set only to override API base. Empty = auto (see api.ts). -->
     <meta name="voltz-api-origin" content="" />
-    <!-- Optional split hosting only: set to https://….netlify.app. Default empty = same-origin /api (avoids CSP). -->
-    <meta name="voltz-api-fallback-origin" content="" />
+    <!-- When the custom domain does not yet route /api to Netlify, API calls use this host (CORS is open on the API). Clear to force same-origin /api only. -->
+    <meta name="voltz-api-fallback-origin" content="https://voltz-supply.netlify.app" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Voltz Industrial Supply | Industrial Electrical Components & Automation Equipment</title>
     <meta name="description" content="Voltz Industrial Supply — Your trusted source for industrial electrical components, automation equipment, PLCs, inverters, sensors, and control systems. Competitive pricing & fast shipping worldwide." />

@@ -8,7 +8,7 @@ If **both** the SPA and the API are served from the **same Netlify site** (e.g. 
 
 - Leave **`VITE_API_URL`** unset in Netlify environment variables.
 - Keep **`voltz-api-origin`** empty in `index.html` (default in this repo).
-- The browser normally calls **`/api/...` on the same host**. If your **custom domain** still serves the SPA for `/api/*` (HTML instead of JSON), `index.html` includes **`voltz-api-fallback-origin`** (default `https://voltz-supply.netlify.app`) so API calls hit Netlify until DNS is fully correct — see `src/lib/api.ts`.
+- On **custom domains**, `index.html` sets **`voltz-api-fallback-origin`** to **`https://voltz-supply.netlify.app`** so API calls reach Netlify even if `/api/*` on the marketing host still returns the SPA (DNS not fully on Netlify). When DNS is correct you can clear that meta to use same-origin `/api` only. If **`Failed to fetch`** appears, your **Content-Security-Policy** may need `connect-src` to include that Netlify URL (or relax CSP).
 - You do **not** need **`AWS_CLOUDFRONT_API.md`** unless you use optional **AWS** CloudFront + S3 for the static app.
 
 Use **Split hosting** below only if static assets are hosted **outside** Netlify (e.g. **AWS** S3 + **Amazon** CloudFront) while the API stays on Netlify.
@@ -33,7 +33,7 @@ Use **Split hosting** below only if static assets are hosted **outside** Netlify
 
 Do **not** set `VOLTZ_STORAGE=blobs` manually unless you change code—the Netlify function already uses blob storage.
 
-**`Failed to fetch` / CSP:** Do **not** set `VITE_API_URL` to your `*.netlify.app` URL when using a **custom domain** on the same Netlify site — the app **ignores** that pattern and uses same-origin `/api` (see `src/lib/api.ts`). Remove `VITE_API_URL` from Netlify env and redeploy so the bundle does not embed a cross-origin API base.
+**`Failed to fetch` / CSP:** Prefer leaving **`VITE_API_URL`** unset so the client uses **`voltz-api-fallback-origin`** / same-origin rules only. If you do set it to `*.netlify.app` on a custom domain, the build **does not** use that URL as the API base; **`voltz-api-fallback-origin`** in `index.html` still applies (see `getApiBaseUrl` in `src/lib/api.ts`).
 
 ### Split hosting (SPA on AWS S3 / Amazon CloudFront, API on Netlify)
 
