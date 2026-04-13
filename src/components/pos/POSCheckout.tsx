@@ -55,7 +55,6 @@ import {
 } from '@/lib/utils';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { generateEmailHTML } from '@/components/pos/POSPrintTemplate';
-import { buildDocumentPdfBase64 } from '@/components/pos/documentPdf';
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from './quotationHtml';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
@@ -2297,22 +2296,12 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         if (payCustomerId) {
           const nextSc = await deductCustomerStoreCredit(payCustomerId, creditApplied);
           if (nextSc !== null) {
-            try {
-              const fresh = await fetchCustomers();
-              setCustomers(fresh);
-            } catch (e) {
-              console.error('fetchCustomers after store credit:', e);
-              setCustomers((prev) =>
-                prev.map((c) =>
-                  String(c.id) === String(payCustomerId) ? { ...c, store_credit: nextSc } : c
-                )
-              );
-            }
-            try {
-              await onCustomersRefresh?.();
-            } catch (e) {
-              console.error('onCustomersRefresh:', e);
-            }
+            setCustomers((prev) =>
+              prev.map((c) =>
+                String(c.id) === String(payCustomerId) ? { ...c, store_credit: nextSc } : c
+              )
+            );
+            void onCustomersRefresh?.();
           } else {
             notify({
               variant: 'error',
@@ -2331,23 +2320,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       }
 
       // Push payment + lines to each linked quote/order row (one pass per saved invoice).
-      let invAfterPersist: POSInvoice[] = [];
-      try {
-        invAfterPersist = await fetchInvoices();
-      } catch (e) {
-        console.error('fetchInvoices before propagate:', e);
-      }
-      for (const pr of persistResults) {
-        if (!pr.invoice) continue;
-        const fresh = invAfterPersist.find((x) => String(x.id) === String(pr.invoice!.id)) ?? pr.invoice;
-        await propagateInvoiceToLinkedRecords(fresh);
-      }
-
-      // Keep local mirrors aligned with server so search/hydration match linked records.
-      const [qNext, oNext, iNext] = await Promise.all([fetchQuotes(), fetchOrders(), fetchInvoices()]);
-      setQuotes(qNext);
-      setOrders(oNext);
-      setInvoices(iNext);
+      await Promise.all(
+        persistResults
+          .filter((pr): pr is { invoice: POSInvoice; orderId?: string } => !!pr.invoice)
+          .map((pr) => propagateInvoiceToLinkedRecords(pr.invoice))
+      );
 
       const withInv = persistResults.filter((p) => p.invoice);
       const receiptWeights = withInv.map((pr) => num(pr.invoice?.total ?? 0));
@@ -2367,13 +2344,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         if (!isValidEmailFormatForForms(emailTo)) return;
         try {
           const emailHtml = generateEmailHTML(mailDoc);
-          let attachments: { filename: string; contentBase64: string }[] | undefined;
-          try {
-            const pdf = await buildDocumentPdfBase64(mailDoc);
-            attachments = [{ filename: pdf.filename, contentBase64: pdf.base64 }];
-          } catch (pdfErr) {
-            console.error('Receipt PDF attachment failed:', pdfErr);
-          }
           const emailResult = await sendEmail({
             to: emailTo,
             toName: (customerName || '').trim() || undefined,
@@ -2382,7 +2352,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             documentType: 'receipt',
             documentId: String(rec.id),
             documentNumber: rec.receipt_number,
-            attachments,
           });
           if (emailResult.success) {
             receiptEmailedTo = emailTo;
@@ -2404,20 +2373,16 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       };
 
       if (withInv.length > 1) {
-        const primaryInv =
-          iNext.find((x) => String(x.id) === String(withInv[0].invoice!.id)) ??
-          withInv[0].invoice!;
+        const primaryInv = withInv[0].invoice!;
         /** Sum of saved invoice totals — matches what the customer pays; checkout `documentTotal` can differ by cents. */
         const perStreamInvoiceTotals = withInv.map((pr) => {
-          const inv =
-            iNext.find((x) => String(x.id) === String(pr.invoice!.id)) ?? pr.invoice!;
+          const inv = pr.invoice!;
           return num(inv.total);
         });
         const combinedSettlementTotal = Math.round(perStreamInvoiceTotals.reduce((a, b) => a + b, 0) * 100) / 100;
         const invLines = withInv.map((pr) => {
-          const inv =
-            iNext.find((x) => String(x.id) === String(pr.invoice!.id)) ?? pr.invoice!;
-          const ord = pr.orderId ? oNext.find((x) => String(x.id) === String(pr.orderId)) : undefined;
+          const inv = pr.invoice!;
+          const ord = pr.orderId ? orders.find((x) => String(x.id) === String(pr.orderId)) : undefined;
           const parts = [`${inv.invoice_number} ${fmtMoney(num(inv.total))}`];
           if (ord?.order_number) parts.push(`Order ${ord.order_number}`);
           return parts.join(' · ');
@@ -2438,8 +2403,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         for (let pi = 0; pi < persistResults.length; pi++) {
           const pr = persistResults[pi];
           if (!pr.invoice) continue;
-          const inv =
-            iNext.find((x) => String(x.id) === String(pr.invoice!.id)) ?? pr.invoice!;
+          const inv = pr.invoice!;
           const alloc = perStreamAllocations ? perStreamAllocations[pi]! : allocationThisCheckout;
           combinedBalanceDueCents += balanceDueBeforePaymentCents(inv, alloc);
         }
@@ -2521,8 +2485,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         for (let ridx = 0; ridx < persistResults.length; ridx++) {
           const pr = persistResults[ridx];
           if (!pr.invoice) continue;
-          const inv =
-            iNext.find((x) => String(x.id) === String(pr.invoice!.id)) ?? pr.invoice!;
+          const inv = pr.invoice!;
           const allocationForReceipt = perStreamAllocations ? perStreamAllocations[ridx]! : allocationThisCheckout;
           const crPart = creditParts[ridx] ?? 0;
           const tnPart = tenderParts[ridx] ?? 0;
@@ -2622,22 +2585,12 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       if (overpayToStoreCredit > PAY_EPS && creditCustomerIdOverpay) {
         const nextAfterOverpay = await addCustomerStoreCredit(creditCustomerIdOverpay, overpayToStoreCredit);
         if (nextAfterOverpay !== null) {
-          try {
-            const fresh = await fetchCustomers();
-            setCustomers(fresh);
-          } catch (e) {
-            console.error('fetchCustomers after overpayment credit:', e);
-            setCustomers((prev) =>
-              prev.map((c) =>
-                String(c.id) === String(creditCustomerIdOverpay) ? { ...c, store_credit: nextAfterOverpay } : c
-              )
-            );
-          }
-          try {
-            await onCustomersRefresh?.();
-          } catch (e) {
-            console.error('onCustomersRefresh:', e);
-          }
+          setCustomers((prev) =>
+            prev.map((c) =>
+              String(c.id) === String(creditCustomerIdOverpay) ? { ...c, store_credit: nextAfterOverpay } : c
+            )
+          );
+          void onCustomersRefresh?.();
         } else {
           notify({
             variant: 'error',
@@ -2705,12 +2658,23 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       setCustomerSearch('');
       setShowCustomerDropdown(false);
       setSuppressCrmWalletDisplay(true);
-      try {
-        const freshCust = await fetchCustomers();
-        setCustomers(freshCust);
-      } catch (e) {
-        console.error('fetchCustomers after checkout:', e);
-      }
+      // Keep completion fast: refresh reference lists in background.
+      void (async () => {
+        try {
+          const [qNext, oNext, iNext, freshCust] = await Promise.all([
+            fetchQuotes(),
+            fetchOrders(),
+            fetchInvoices(),
+            fetchCustomers(),
+          ]);
+          setQuotes(qNext);
+          setOrders(oNext);
+          setInvoices(iNext);
+          setCustomers(freshCust);
+        } catch (e) {
+          console.error('background checkout refresh:', e);
+        }
+      })();
       void (async () => {
         const v = await fetchConfig('pos_default_tax_rate');
         const n = typeof v === 'number' ? v : Number(v);

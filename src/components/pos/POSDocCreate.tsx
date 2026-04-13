@@ -310,6 +310,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   const isFromWebsite = !!prefill?.websiteRequestId;
 
   const typeLabel = { quote: 'Quote', order: 'Order', invoice: 'Invoice' }[type];
+  const isReviewPage = !!editDoc;
 
   useEffect(() => {
     prevMatchedCustomerIdRef.current = null;
@@ -779,11 +780,14 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         };
         const emailHtml = generateEmailHTML(mailDoc);
         let attachments: { filename: string; contentBase64: string }[] | undefined;
-        try {
-          const pdf = await buildDocumentPdfBase64(mailDoc);
-          attachments = [{ filename: pdf.filename, contentBase64: pdf.base64 }];
-        } catch (pdfErr) {
-          console.error('PDF attachment failed:', pdfErr);
+        // Review pages skip PDF generation to keep Save & Email responsive on low-resource machines.
+        if (!isReviewPage) {
+          try {
+            const pdf = await buildDocumentPdfBase64(mailDoc);
+            attachments = [{ filename: pdf.filename, contentBase64: pdf.base64 }];
+          } catch (pdfErr) {
+            console.error('PDF attachment failed:', pdfErr);
+          }
         }
         const emailResult = await sendEmail({
           to: customerEmail,
@@ -804,7 +808,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                 status: 'emailed',
                 email_sent_at: new Date().toISOString(),
               },
-              { syncLinked: true }
+              { syncLinked: false, skipOrderGeneratedPromotion: true }
             );
           } else if (type === 'order' && saved) {
             const os = (saved as POSOrder).status;
@@ -815,7 +819,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
               'processed',
             ];
             if (!orderPipelineLocked.includes(os)) {
-              saved = await saveOrder({ ...(saved as POSOrder), status: 'emailed' }, { syncLinked: true });
+              saved = await saveOrder({ ...(saved as POSOrder), status: 'emailed' }, { syncLinked: false });
             }
           }
           notify({
@@ -827,8 +831,12 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                   ? 'Order saved and Email sent Successfully'
                   : 'Invoice saved and Email sent Successfully',
           });
-          if (type === 'quote' && prefill?.websiteRequestId) {
-            await markQuoteRequestEmailSent(prefill.websiteRequestId);
+          if (type === 'quote') {
+            const websiteRequestId =
+              prefill?.websiteRequestId || (saved as POSQuote | undefined)?.website_request_id;
+            if (websiteRequestId) {
+              await markQuoteRequestEmailSent(websiteRequestId);
+            }
           }
         } else {
           notify({
