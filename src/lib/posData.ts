@@ -1116,30 +1116,30 @@ export async function fetchReceipts(): Promise<POSReceipt[]> {
   }
 }
 
-export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt | null> {
+export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt> {
+  const payload: Record<string, unknown> = {
+    id: rec.id || `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    receipt_number: rec.receipt_number || '',
+    invoice_id: rec.invoice_id || null,
+    customer_id: rec.customer_id || null,
+    customer_name: rec.customer_name || '',
+    payment_method: rec.payment_method || '',
+    status: rec.status || 'approved',
+    payment_type: rec.payment_type || 'full',
+    amount_paid: rec.amount_paid || 0,
+    items: rec.items || [],
+    total: rec.total || 0,
+    notes: rec.notes || '',
+    created_at:
+      rec.created_at || new Date().toISOString().replace('T', ' ').replace('Z', '').slice(0, 23),
+  };
+  if (rec.invoice_links && rec.invoice_links.length > 0) {
+    payload.invoice_links = rec.invoice_links.map((l) => ({
+      invoice_id: l.invoice_id,
+      amount_applied: Number(l.amount_applied) || 0,
+    }));
+  }
   try {
-    const payload: Record<string, unknown> = {
-      id: rec.id || `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-      receipt_number: rec.receipt_number || '',
-      invoice_id: rec.invoice_id || null,
-      customer_id: rec.customer_id || null,
-      customer_name: rec.customer_name || '',
-      payment_method: rec.payment_method || '',
-      status: rec.status || 'approved',
-      payment_type: rec.payment_type || 'full',
-      amount_paid: rec.amount_paid || 0,
-      items: rec.items || [],
-      total: rec.total || 0,
-      notes: rec.notes || '',
-      created_at:
-        rec.created_at || new Date().toISOString().replace('T', ' ').replace('Z', '').slice(0, 23),
-    };
-    if (rec.invoice_links && rec.invoice_links.length > 0) {
-      payload.invoice_links = rec.invoice_links.map((l) => ({
-        invoice_id: l.invoice_id,
-        amount_applied: Number(l.amount_applied) || 0,
-      }));
-    }
     const data = await apiPost<any>('/api/pos/receipts', payload);
     broadcastPOSChange('pos_receipts');
     return {
@@ -1149,7 +1149,9 @@ export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt 
     };
   } catch (e) {
     console.error('saveReceipt:', e);
-    return null;
+    const msg =
+      e instanceof Error ? e.message : typeof e === 'string' ? e : 'Receipt save failed';
+    throw new Error(msg);
   }
 }
 

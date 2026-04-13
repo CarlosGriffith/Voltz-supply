@@ -3372,12 +3372,17 @@ const CMSDashboardInner: React.FC = () => {
             </div>
             <div className="flex gap-2">
               <button onClick={async () => {
-                const result = await markInvoicePaidAndDelivered(checkoutInvoice, paymentMethod);
-                if (result.invoice && result.receipt) {
-                  printDocument({ type: 'receipt', docNumber: result.receipt.receipt_number, date: result.receipt.created_at, customerName: result.receipt.customer_name, items: result.receipt.items, subtotal: checkoutInvoice.subtotal, taxRate: checkoutInvoice.tax_rate, taxAmount: checkoutInvoice.tax_amount, total: result.receipt.total, amountPaid: result.receipt.amount_paid, paymentMethod });
-                  await loadData();
+                try {
+                  const result = await markInvoicePaidAndDelivered(checkoutInvoice, paymentMethod);
+                  if (result.invoice && result.receipt) {
+                    printDocument({ type: 'receipt', docNumber: result.receipt.receipt_number, date: result.receipt.created_at, customerName: result.receipt.customer_name, items: result.receipt.items, subtotal: checkoutInvoice.subtotal, taxRate: checkoutInvoice.tax_rate, taxAmount: checkoutInvoice.tax_amount, total: result.receipt.total, amountPaid: result.receipt.amount_paid, paymentMethod });
+                    await loadData();
+                  }
+                  setCheckoutInvoice(null);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  notify({ variant: 'error', title: 'Could not complete checkout', subtitle: `POS → Invoices — ${msg}` });
                 }
-                setCheckoutInvoice(null);
               }} className="flex-1 py-2.5 bg-green-600 text-white rounded-lg text-sm font-bold hover:bg-green-700">Mark Paid & Delivered</button>
               <button onClick={() => setCheckoutInvoice(null)} className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm">Cancel</button>
             </div>

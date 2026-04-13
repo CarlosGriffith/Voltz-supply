@@ -2691,7 +2691,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             amount_applied: num(pr.streamAllocation ?? 0),
           })),
         });
-        if (!rec) throw new Error('Receipt could not be saved');
 
         const receiptSettlementInvoices = withInv.map((pr) => {
           const inv = pr.invoice!;
@@ -2793,7 +2792,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             notes: '',
             invoice_links: [{ invoice_id: inv.id, amount_applied: allocationForReceipt }],
           });
-          if (!rec) throw new Error('Receipt could not be saved');
 
           const receiptLineItemsSingle = inv.items && inv.items.length > 0 ? inv.items : itemsPayload;
           const receiptLineInvoiceNumbersSingle = receiptLineItemsSingle.map(() => String(inv.invoice_number || '').trim());

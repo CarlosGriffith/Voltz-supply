@@ -1,17 +1,12 @@
 ---
-description: After completing a multi-file feature or fix, commit and push to origin unless the user opts out
+description: Git commits and pushes only when the user explicitly asks — no automatic uploads
 alwaysApply: true
 ---
 
-# Git: push after substantive work
+# Git: no automatic push
 
-When you finish a **coherent change** (feature, bugfix, refactor touching several files, or docs tied to that work), **commit and push** to the remote (`origin`) if the repo is clean enough to do so:
+**Do not** commit or push to `origin` unless the user **explicitly** asks to upload, commit, push, or ship changes to git.
 
-1. `git status` — review changes
-2. `git add` the relevant paths (or `-A` when the whole change should ship together)
-3. `git commit -m "..."` with a short, accurate message
-4. `git push` to the current branch (usually `main`)
+When they do ask: review `git status`, stage relevant paths, commit with a clear message, and push (unless they said commit-only or there are secrets in the diff). If push fails, report the error and what was committed locally.
 
-Do **not** push if the user explicitly asked only for local edits, if there are secrets in the diff, or if they said not to commit. If push fails (auth, network), report the error and what was committed locally.
-
-This matches the user’s expectation: **“upload to git”** after fixes like API deploy, media URLs, or CMS changes.
+If the user later opts back into “push after substantive work,” they can say so and this rule can be updated.
