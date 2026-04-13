@@ -3202,7 +3202,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                         : 'Undo (nothing to restore)'
                     }
                   >
-                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    <RotateCcw
+                      className="h-4 w-4 shrink-0 origin-center scale-x-[1.22] scale-y-[0.92]"
+                      strokeWidth={2.75}
+                      aria-hidden
+                    />
                     Undo
                   </button>
                   <button
