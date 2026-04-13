@@ -310,6 +310,14 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   const isFromWebsite = !!prefill?.websiteRequestId;
 
   const typeLabel = { quote: 'Quote', order: 'Order', invoice: 'Invoice' }[type];
+  const recordNumber =
+    editDoc == null
+      ? ''
+      : type === 'quote'
+        ? (editDoc as POSQuote).quote_number ?? ''
+        : type === 'order'
+          ? (editDoc as POSOrder).order_number ?? ''
+          : (editDoc as POSInvoice).invoice_number ?? '';
   const isReviewPage = !!editDoc;
 
   useEffect(() => {
@@ -986,7 +994,11 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">{editDoc ? 'Review' : 'Create'} {typeLabel}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">
+            {editDoc
+              ? `Review ${typeLabel}${recordNumber ? `: ${recordNumber}` : ''}`
+              : `Create ${typeLabel}`}
+          </h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <button
