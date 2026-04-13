@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, Undo2, RotateCcw, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
+  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, RotateCcw, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
 } from 'lucide-react';
 import { Product } from '@/data/products';
 import { fetchCustomProducts, fetchProductOverrides, fetchConfig, updateProductStockCount } from '@/lib/cmsData';
@@ -204,6 +204,20 @@ type CheckoutLineItem = POSLineItem & {
   /** When false, line is excluded from subtotal/tax/total and from persisted invoice/order lines. */
   includeInTotal?: boolean;
 };
+
+const LINE_ITEMS_UNDO_MAX = 50;
+
+function cloneCheckoutLineItem(item: CheckoutLineItem): CheckoutLineItem {
+  const alloc = item.checkoutDocAllocations?.map((a) => ({ ...a }));
+  return {
+    ...item,
+    checkoutDocAllocations: alloc,
+  };
+}
+
+function cloneCheckoutLineItems(items: CheckoutLineItem[]): CheckoutLineItem[] {
+  return items.map(cloneCheckoutLineItem);
+}
 
 /** Strip legacy/display tags from a merged doc label string. */
 function stripDocLabelSuffix(label?: string): string | undefined {
@@ -1567,9 +1581,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
   const searchRef = useRef<HTMLDivElement>(null);
 
   const [lineItems, setLineItems] = useState<CheckoutLineItem[]>([]);
-  const [lineRemoveUndo, setLineRemoveUndo] = useState<{ item: CheckoutLineItem; atIndex: number } | null>(null);
-  /** Snapshot of all lines before “Clear” — restored by Undo clear. */
-  const [lineItemsClearUndo, setLineItemsClearUndo] = useState<CheckoutLineItem[] | null>(null);
+  /** Prior line snapshots for Items “Undo” (each entry is the state before one user edit). */
+  const [lineItemsUndoStack, setLineItemsUndoStack] = useState<CheckoutLineItem[][]>([]);
   const [itemsTableColLayout, setItemsTableColLayout] = useState<number[]>(() => [...POS_ITEMS_TABLE_COL_DEFAULTS]);
   const [taxRate, setTaxRate] = useState(0);
   const [discountInput, setDiscountInput] = useState('');
@@ -1733,8 +1746,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           };
         })
       );
-      setLineItemsClearUndo(null);
-      setLineRemoveUndo(null);
+      setLineItemsUndoStack([]);
       setTaxRate(doc.tax_rate ?? 0);
       const d = doc.discount_amount;
       setDiscountInput(d != null && Number(d) !== 0 ? String(d) : '');
@@ -1766,8 +1778,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
     if (hydrateKeyRef.current === 'none') return;
     hydrateKeyRef.current = 'none';
     setLineItems([]);
-    setLineItemsClearUndo(null);
-    setLineRemoveUndo(null);
+    setLineItemsUndoStack([]);
     setDiscountInput('');
     setCustomerName(POS_DEFAULT_VISITOR_CUSTOMER_NAME);
     setCustomerEmail('');
@@ -1933,8 +1944,28 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
         docMatchesExcludingCustomerDocs.invoices.length >
         0);
 
+  const commitLineItemsUpdate = useCallback((recipe: (prev: CheckoutLineItem[]) => CheckoutLineItem[]) => {
+    setLineItems((prev) => {
+      const next = recipe(prev);
+      if (next === prev) return prev;
+      setLineItemsUndoStack((stack) =>
+        [...stack, cloneCheckoutLineItems(prev)].slice(-LINE_ITEMS_UNDO_MAX)
+      );
+      return next;
+    });
+  }, []);
+
+  const undoLastLineItemsChange = useCallback(() => {
+    setLineItemsUndoStack((stack) => {
+      if (stack.length === 0) return stack;
+      const snapshot = stack[stack.length - 1];
+      setLineItems(cloneCheckoutLineItems(snapshot));
+      return stack.slice(0, -1);
+    });
+  }, []);
+
   const addProduct = (p: Product) => {
-    setLineItems((prev) =>
+    commitLineItemsUpdate((prev) =>
       mergeCheckoutLineItems(prev, [
         {
           product_id: p.id,
@@ -1977,7 +2008,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
 
   const addItemsFromDoc = (doc: POSQuote | POSOrder | POSInvoice) => {
     const label = docNumberLabel(doc);
-    setLineItems((prev) =>
+    commitLineItemsUpdate((prev) =>
       mergeCheckoutLineItems(
         prev,
         (doc.items || []).map((item) => {
@@ -2002,62 +2033,38 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
   const updateQty = (idx: number, qty: number) => {
     const n = Number(qty);
     const q = !Number.isFinite(n) ? 0 : Math.max(0, Math.floor(n));
-    setLineItems((prev) =>
+    commitLineItemsUpdate((prev) =>
       prev.map((item, i) => (i === idx ? adjustCheckoutLineQuantity(item, q) : item))
     );
   };
 
   const updatePrice = (idx: number, price: number) => {
-    setLineItems((prev) =>
+    commitLineItemsUpdate((prev) =>
       prev.map((item, i) =>
         i === idx ? { ...item, unit_price: price, total: item.quantity * price } : item
       )
     );
   };
 
-  const undoRemoveLine = useCallback(() => {
-    if (!lineRemoveUndo) return;
-    const { item, atIndex } = lineRemoveUndo;
-    setLineRemoveUndo(null);
-    setLineItems((prev) => {
-      const next = [...prev];
-      const pos = Math.min(Math.max(0, atIndex), next.length);
-      next.splice(pos, 0, item);
-      return next;
-    });
-  }, [lineRemoveUndo]);
-
   const clearAllLineItems = useCallback(() => {
-    setLineItems((prev) => {
+    commitLineItemsUpdate((prev) => {
       if (prev.length === 0) return prev;
-      const snapshot = prev.map((it) => ({ ...it }));
-      setLineItemsClearUndo(snapshot);
-      setLineRemoveUndo(null);
       return [];
     });
-  }, []);
+  }, [commitLineItemsUpdate]);
 
-  const undoClearLineItems = useCallback(() => {
-    if (!lineItemsClearUndo) return;
-    setLineItems(lineItemsClearUndo.map((it) => ({ ...it })));
-    setLineItemsClearUndo(null);
-    setLineRemoveUndo(null);
-  }, [lineItemsClearUndo]);
-
-  const removeItem = useCallback((idx: number) => {
-    let snapshot: CheckoutLineItem | null = null;
-    setLineItems((prev) => {
-      const item = prev[idx];
-      if (!item) return prev;
-      snapshot = { ...item };
-      return prev.filter((_, i) => i !== idx);
-    });
-    if (!snapshot) return;
-    setLineRemoveUndo({ item: snapshot, atIndex: idx });
-  }, []);
+  const removeItem = useCallback(
+    (idx: number) => {
+      commitLineItemsUpdate((prev) => {
+        if (!prev[idx]) return prev;
+        return prev.filter((_, i) => i !== idx);
+      });
+    },
+    [commitLineItemsUpdate]
+  );
 
   const toggleLineIncluded = (idx: number) => {
-    setLineItems((prev) =>
+    commitLineItemsUpdate((prev) =>
       prev.map((it, i) =>
         i === idx ? { ...it, includeInTotal: it.includeInTotal === false } : it
       )
@@ -2163,7 +2170,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       );
       const docsToAdd = [...qRows, ...oRows, ...iRows];
       if (docsToAdd.length > 0) {
-        setLineItems((prev) => {
+        commitLineItemsUpdate((prev) => {
           let next = prev;
           for (const doc of docsToAdd) {
             const label = docNumberLabel(doc);
@@ -2764,8 +2771,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
 
       // Reset form for the next sale; receipt preview stays open until the user closes it.
       setLineItems([]);
-      setLineItemsClearUndo(null);
-      setLineRemoveUndo(null);
+      setLineItemsUndoStack([]);
       setItemsTableColLayout([...POS_ITEMS_TABLE_COL_DEFAULTS]);
       setSearchQuery('');
       setShowSearch(false);
@@ -3176,23 +3182,29 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             <div className="px-4 py-3 border-b border-gray-100 font-semibold text-[#1a2332] flex items-center justify-between gap-3 min-w-0">
               <span className="shrink-0">Items</span>
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end">
-                {lineRemoveUndo ? (
-                  <button
-                    type="button"
-                    onClick={undoRemoveLine}
-                    className="inline-flex max-w-[min(100%,12rem)] sm:max-w-md items-center gap-1 rounded-md py-0.5 pl-0.5 pr-1 text-[11px] font-normal text-gray-600 hover:bg-gray-100 hover:text-[#1a2332]"
-                    title={`Restore ${lineRemoveUndo.item.product_name || 'line'}`}
-                  >
-                    <Undo2 className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
-                    <span className="truncate text-left">
-                      Undo Delete - ({lineRemoveUndo.item.product_name || 'Line'})
-                    </span>
-                  </button>
-                ) : null}
                 <span className="text-xs font-normal text-gray-400 shrink-0 tabular-nums">
                   {lineItems.length} line(s)
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={undoLastLineItemsChange}
+                    disabled={saving || lineItemsUndoStack.length === 0}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
+                    title={
+                      lineItemsUndoStack.length > 0
+                        ? 'Undo last change in Items (up to 50 steps)'
+                        : 'Nothing to undo'
+                    }
+                    aria-label={
+                      lineItemsUndoStack.length > 0
+                        ? 'Undo last change in Items'
+                        : 'Undo (nothing to restore)'
+                    }
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    Undo
+                  </button>
                   <button
                     type="button"
                     onClick={clearAllLineItems}
@@ -3200,16 +3212,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                     className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
                   >
                     Clear
-                  </button>
-                  <button
-                    type="button"
-                    onClick={undoClearLineItems}
-                    disabled={saving || !lineItemsClearUndo}
-                    className="inline-flex items-center justify-center w-8 h-[26px] rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none"
-                    title={lineItemsClearUndo ? 'Restore all cleared lines' : 'Nothing to undo'}
-                    aria-label={lineItemsClearUndo ? 'Undo clear — restore all cleared lines' : 'Undo clear (nothing to restore)'}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden />
                   </button>
                 </div>
               </div>
@@ -3387,7 +3389,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                       onChange={(e) => {
                         const raw = e.target.value.trim();
                         if (raw === '') {
-                          setLineItems((prev) =>
+                          commitLineItemsUpdate((prev) =>
                             prev.map((it, i) =>
                               i === idx ? adjustCheckoutLineQuantity(it, 0) : it
                             )
@@ -3396,7 +3398,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                         }
                         const nextQty = parseInt(raw, 10);
                         if (!Number.isNaN(nextQty)) {
-                          setLineItems((prev) =>
+                          commitLineItemsUpdate((prev) =>
                             prev.map((it, i) =>
                               i === idx ? adjustCheckoutLineQuantity(it, Math.max(0, nextQty)) : it
                             )
@@ -3404,7 +3406,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                         }
                       }}
                       onBlur={() => {
-                        setLineItems((prev) =>
+                        commitLineItemsUpdate((prev) =>
                           prev.map((it, i) =>
                             i === idx && !Number.isFinite(it.quantity)
                               ? adjustCheckoutLineQuantity(it, 0)
