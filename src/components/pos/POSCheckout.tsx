@@ -2632,6 +2632,10 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           items: itemsPayload,
           total: combinedSettlementTotal,
           notes: noteParts.join(' — '),
+          invoice_links: withInv.map((pr, pi) => ({
+            invoice_id: pr.invoice!.id,
+            amount_applied: perStreamAllocations ? perStreamAllocations[pi]! : allocationThisCheckout,
+          })),
         });
         if (!rec) throw new Error('Receipt could not be saved');
 
@@ -2728,6 +2732,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             items: inv.items,
             total: inv.total,
             notes: noteParts.join(' — '),
+            invoice_links: [{ invoice_id: inv.id, amount_applied: allocationForReceipt }],
           });
           if (!rec) throw new Error('Receipt could not be saved');
 

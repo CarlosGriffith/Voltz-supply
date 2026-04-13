@@ -5,6 +5,7 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 TRUNCATE TABLE pos_refunds;
+TRUNCATE TABLE pos_receipt_invoice_links;
 TRUNCATE TABLE pos_receipts;
 TRUNCATE TABLE pos_invoices;
 TRUNCATE TABLE pos_orders;

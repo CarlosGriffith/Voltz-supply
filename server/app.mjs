@@ -411,7 +411,35 @@ app.get('/api/pos/quote-requests', posRowsHandler('pos_quote_requests'));
 app.get('/api/pos/quotes', posRowsHandler('pos_quotes'));
 app.get('/api/pos/orders', posRowsHandler('pos_orders'));
 app.get('/api/pos/invoices', posRowsHandler('pos_invoices'));
-app.get('/api/pos/receipts', posRowsHandler('pos_receipts'));
+app.get('/api/pos/receipts', async (_req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM pos_receipts ORDER BY created_at DESC');
+    if (!rows?.length) return res.json([]);
+    const ids = rows.map((r) => r.id);
+    const [linkRows] = await pool.query(
+      'SELECT receipt_id, invoice_id, amount_applied FROM pos_receipt_invoice_links WHERE receipt_id IN (?)',
+      [ids]
+    );
+    const byReceipt = new Map();
+    for (const l of linkRows || []) {
+      const rid = l.receipt_id;
+      if (!byReceipt.has(rid)) byReceipt.set(rid, []);
+      byReceipt.get(rid).push({
+        invoice_id: l.invoice_id,
+        amount_applied: Number(l.amount_applied) || 0,
+      });
+    }
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        invoice_links: byReceipt.get(r.id) ?? [],
+      }))
+    );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || 'receipts list failed' });
+  }
+});
 app.get('/api/pos/refunds', posRowsHandler('pos_refunds'));
 app.get('/api/pos/sent-emails', async (_req, res) => {
   try {
@@ -795,52 +823,88 @@ app.post('/api/pos/invoices', async (req, res) => {
 });
 
 app.post('/api/pos/receipts', async (req, res) => {
+  const r = req.body;
+  const id = r.id || `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rawLinks = r.invoice_links;
+  let invoiceLinks = [];
+  if (Array.isArray(rawLinks) && rawLinks.length > 0) {
+    invoiceLinks = rawLinks
+      .map((l) => ({
+        invoice_id: l?.invoice_id != null ? String(l.invoice_id).trim() : '',
+        amount_applied: Number(l.amount_applied) || 0,
+      }))
+      .filter((l) => l.invoice_id);
+  } else if (r.invoice_id != null && String(r.invoice_id).trim() !== '') {
+    invoiceLinks = [
+      {
+        invoice_id: String(r.invoice_id).trim(),
+        amount_applied: Number(r.amount_paid) || 0,
+      },
+    ];
+  }
+
+  const cols = [
+    'receipt_number',
+    'invoice_id',
+    'customer_id',
+    'customer_name',
+    'payment_method',
+    'status',
+    'payment_type',
+    'amount_paid',
+    'items',
+    'total',
+    'notes',
+    'created_at',
+  ];
+  const vals = [
+    r.receipt_number ?? '',
+    r.invoice_id ?? null,
+    r.customer_id ?? null,
+    r.customer_name ?? '',
+    r.payment_method ?? '',
+    r.status ?? 'approved',
+    r.payment_type ?? 'full',
+    r.amount_paid ?? 0,
+    typeof r.items === 'string' ? r.items : JSON.stringify(r.items || []),
+    r.total ?? 0,
+    r.notes ?? '',
+    r.created_at ?? new Date().toISOString().replace('Z', '').slice(0, 23),
+  ];
+  const placeholders = cols.map(() => '?').join(',');
+  const updates = cols
+    .filter((c) => c !== 'created_at')
+    .map((c) => `${c}=d.${c}`)
+    .join(',');
+
+  const conn = await pool.getConnection();
   try {
-    const r = req.body;
-    const id = r.id || `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const cols = [
-      'receipt_number',
-      'invoice_id',
-      'customer_id',
-      'customer_name',
-      'payment_method',
-      'status',
-      'payment_type',
-      'amount_paid',
-      'items',
-      'total',
-      'notes',
-      'created_at',
-    ];
-    const vals = [
-      r.receipt_number ?? '',
-      r.invoice_id ?? null,
-      r.customer_id ?? null,
-      r.customer_name ?? '',
-      r.payment_method ?? '',
-      r.status ?? 'approved',
-      r.payment_type ?? 'full',
-      r.amount_paid ?? 0,
-      typeof r.items === 'string' ? r.items : JSON.stringify(r.items || []),
-      r.total ?? 0,
-      r.notes ?? '',
-      r.created_at ?? new Date().toISOString().replace('Z', '').slice(0, 23),
-    ];
-    const placeholders = cols.map(() => '?').join(',');
-    const updates = cols
-      .filter((c) => c !== 'created_at')
-      .map((c) => `${c}=d.${c}`)
-      .join(',');
-    await pool.query(
+    await conn.beginTransaction();
+    await conn.query(
       `INSERT INTO pos_receipts (id,${cols.join(',')}) VALUES (?,${placeholders}) AS d
        ON DUPLICATE KEY UPDATE ${updates}`,
       [id, ...vals]
     );
-    const [[row]] = await pool.query('SELECT * FROM pos_receipts WHERE id = ?', [id]);
-    res.json(row);
+    await conn.query('DELETE FROM pos_receipt_invoice_links WHERE receipt_id = ?', [id]);
+    for (const link of invoiceLinks) {
+      await conn.query(
+        `INSERT INTO pos_receipt_invoice_links (receipt_id, invoice_id, amount_applied) VALUES (?, ?, ?)`,
+        [id, link.invoice_id, link.amount_applied]
+      );
+    }
+    await conn.commit();
+    const [[row]] = await conn.query('SELECT * FROM pos_receipts WHERE id = ?', [id]);
+    res.json({ ...row, invoice_links: invoiceLinks });
   } catch (e) {
+    try {
+      await conn.rollback();
+    } catch (rb) {
+      console.error(rb);
+    }
     console.error(e);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message || 'receipt save failed' });
+  } finally {
+    conn.release();
   }
 });
 

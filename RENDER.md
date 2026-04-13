@@ -28,6 +28,10 @@ Set the same database variables you used on Netlify (see `.env.example`):
 
 Render injects **`PORT`** and **`RENDER`** automatically — do not set `PORT` yourself.
 
+### Database migrations (existing Aiven MySQL)
+
+After pulling changes that add POS receipt–invoice link storage, run **`scripts/migrate-pos-receipt-invoice-links.sql`** once against your database (MySQL client or Aiven console). New databases built from **`scripts/mysql-aiven-bootstrap.sql`** already include `pos_receipt_invoice_links` and related routines.
+
 ### Email (POS / CMS)
 
 **Option A — Resend (recommended if SMTP times out)**  

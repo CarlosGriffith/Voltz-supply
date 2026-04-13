@@ -258,6 +258,12 @@ export function invoiceIsOpenBalance(inv: POSInvoice | null | undefined): boolea
   return st === INVOICE_STATUS_UNPAID || st === INVOICE_STATUS_PARTIALLY_PAID;
 }
 
+/** Applied payment from a receipt toward an invoice (see `pos_receipt_invoice_links`). */
+export interface POSReceiptInvoiceLink {
+  invoice_id: string;
+  amount_applied: number;
+}
+
 export interface POSReceipt {
   id: string;
   receipt_number: string;
@@ -272,6 +278,8 @@ export interface POSReceipt {
   total: number;
   notes: string;
   created_at: string;
+  /** When set, persisted in `pos_receipt_invoice_links` (one receipt can settle multiple invoices). */
+  invoice_links?: POSReceiptInvoiceLink[];
 }
 
 export interface POSRefund {
@@ -1055,13 +1063,27 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
   return out;
 }
 
+function normalizeReceiptInvoiceLinks(raw: unknown): POSReceiptInvoiceLink[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((l) => {
+      const row = l && typeof l === 'object' ? (l as Record<string, unknown>) : {};
+      const inv = row.invoice_id != null ? String(row.invoice_id).trim() : '';
+      if (!inv) return null;
+      return { invoice_id: inv, amount_applied: Number(row.amount_applied) || 0 };
+    })
+    .filter((x): x is POSReceiptInvoiceLink => x != null);
+}
+
 export async function fetchReceipts(): Promise<POSReceipt[]> {
   try {
     const data = await apiGet<unknown>('/api/pos/receipts');
     return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
-      amount_paid: Number(r.amount_paid) || 0, total: Number(r.total) || 0,
+      amount_paid: Number(r.amount_paid) || 0,
+      total: Number(r.total) || 0,
+      invoice_links: normalizeReceiptInvoiceLinks(r.invoice_links),
     }));
   } catch (e) {
     console.error('fetchReceipts:', e);
@@ -1071,7 +1093,7 @@ export async function fetchReceipts(): Promise<POSReceipt[]> {
 
 export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt | null> {
   try {
-    const data = await apiPost<any>('/api/pos/receipts', {
+    const payload: Record<string, unknown> = {
       id: rec.id || `rec-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       receipt_number: rec.receipt_number || '',
       invoice_id: rec.invoice_id || null,
@@ -1086,9 +1108,20 @@ export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt 
       notes: rec.notes || '',
       created_at:
         rec.created_at || new Date().toISOString().replace('T', ' ').replace('Z', '').slice(0, 23),
-    });
+    };
+    if (rec.invoice_links && rec.invoice_links.length > 0) {
+      payload.invoice_links = rec.invoice_links.map((l) => ({
+        invoice_id: l.invoice_id,
+        amount_applied: Number(l.amount_applied) || 0,
+      }));
+    }
+    const data = await apiPost<any>('/api/pos/receipts', payload);
     broadcastPOSChange('pos_receipts');
-    return { ...data, items: sanitizeItems(data.items) };
+    return {
+      ...data,
+      items: sanitizeItems(data.items),
+      invoice_links: normalizeReceiptInvoiceLinks(data.invoice_links),
+    };
   } catch (e) {
     console.error('saveReceipt:', e);
     return null;
@@ -1511,6 +1544,7 @@ export async function markInvoicePaidAndDelivered(
     amount_paid: invoice.total,
     items: invoice.items,
     total: invoice.total,
+    invoice_links: [{ invoice_id: invoice.id, amount_applied: invoice.total }],
   });
   return { invoice: updatedInvoice, receipt };
 }
