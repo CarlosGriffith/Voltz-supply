@@ -987,9 +987,23 @@ function normalizeSmtpPayload(s) {
   };
 }
 
-/** Human-readable hint when SMTP rejects credentials (common with Gmail / M365). */
+/** Human-readable hints for nodemailer / SMTP failures (timeouts, auth, DNS). */
 function friendlySmtpSendError(err) {
   const raw = err?.message || String(err);
+  const code = err?.code;
+
+  if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || /timeout|timed out|Connection timeout/i.test(raw)) {
+    return `${raw} — Outbound SMTP never connected. Try port 465 with SSL (secure) vs 587 with STARTTLS; confirm host name and firewall. Cloud APIs (e.g. Render) must reach your provider: allow SMTP from their IPs or use a transactional host (SMTP2GO, SendGrid). If it still times out, set env SMTP_FORCE_IPV4=1 on the API service (IPv6 routing).`;
+  }
+  if (code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(raw)) {
+    return `${raw} — Connection refused: wrong host/port, or the provider blocks this source network.`;
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || /getaddrinfo|ENOTFOUND/i.test(raw)) {
+    return `${raw} — Check SMTP host DNS spelling.`;
+  }
+  if (/certificate|SSL|TLS|self signed|unable to verify|UNABLE_TO_VERIFY_LEAF_SIGNATURE/i.test(raw)) {
+    return `${raw} — TLS issue: try the other port (465 vs 587), or confirm your provider’s required TLS settings.`;
+  }
   if (/535|Invalid login|authentication credentials invalid|auth failed|535-/i.test(raw)) {
     return `${raw} — Verify SMTP username (often your full email) and password. Gmail/Google Workspace: use an App Password. Microsoft 365: enable SMTP AUTH for the mailbox if required.`;
   }
@@ -1022,16 +1036,31 @@ app.post('/api/pos/email/send', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransport({
+    const port = Number(smtp.port) || 587;
+    const connMs = Math.min(
+      120_000,
+      Math.max(5_000, Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 45_000))
+    );
+    const sockMs = Math.min(120_000, Math.max(5_000, Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60_000)));
+
+    const transportOpts = {
       host: smtp.host,
-      port: smtp.port || 587,
-      secure: Number(smtp.port) === 465,
+      port,
+      secure: port === 465,
       auth: { user: smtp.username, pass: smtp.password },
-      requireTLS: smtp.use_tls !== false && Number(smtp.port) !== 465,
-      connectionTimeout: 20_000,
-      greetingTimeout: 20_000,
-      socketTimeout: 25_000,
-    });
+      requireTLS: smtp.use_tls !== false && port !== 465,
+      connectionTimeout: connMs,
+      greetingTimeout: connMs,
+      socketTimeout: sockMs,
+      tls: {
+        servername: String(smtp.host).trim(),
+      },
+    };
+    if (process.env.SMTP_FORCE_IPV4 === '1' || process.env.SMTP_FORCE_IPV4 === 'true') {
+      transportOpts.family = 4;
+    }
+
+    const transporter = nodemailer.createTransport(transportOpts);
 
     const mail = {
       from: smtp.from_name

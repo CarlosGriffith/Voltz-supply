@@ -2892,6 +2892,9 @@ const CMSDashboardInner: React.FC = () => {
               <span className="block mt-1">
                 <strong>AWS SES:</strong> username = access key ID (<code className="text-[10px] bg-blue-100 px-1 rounded">AKIA…</code>); password = SES SMTP password, not the IAM secret key.
               </span>
+              <span className="block mt-1 text-blue-800/90">
+                <strong>Connection timeout?</strong> Your API host must reach the SMTP server (try <strong>465</strong> + SSL vs <strong>587</strong> + TLS). On Render, set <code className="text-[10px] bg-blue-100 px-1 rounded">SMTP_FORCE_IPV4=1</code> if your provider has IPv6 issues. Ensure SES/SendGrid allows sending from your domain.
+              </span>
             </p>
           </div>
         </div>

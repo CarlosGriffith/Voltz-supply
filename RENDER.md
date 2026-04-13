@@ -28,6 +28,15 @@ Set the same database variables you used on Netlify (see `.env.example`):
 
 Render injects **`PORT`** and **`RENDER`** automatically — do not set `PORT` yourself.
 
+### Email (SMTP from POS / CMS)
+
+Outbound mail uses **nodemailer** to your SMTP host (AWS SES, SendGrid, etc.). If **Send Test** shows **connection timeout**:
+
+- Try **port 465** (implicit TLS) vs **587** (STARTTLS), and match **Use TLS** to your provider’s docs.
+- Some providers need **IPv4**: add environment variable **`SMTP_FORCE_IPV4=1`** on the Render service.
+- Optional: **`SMTP_CONNECTION_TIMEOUT_MS`** (default 45000), **`SMTP_SOCKET_TIMEOUT_MS`** (default 60000).
+- Ensure your provider allows connections from **cloud** IPs (SES sandbox, SendGrid allowlist, etc.).
+
 ## 3. Point the frontend at Render
 
 The built Vite app must know the API **origin** (no path prefix: the client calls `https://your-api.onrender.com/api/...`).
