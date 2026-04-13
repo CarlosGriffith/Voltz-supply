@@ -995,9 +995,21 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             <ArrowLeft className="w-5 h-5" />
           </button>
           <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">
-            {editDoc
-              ? `Review ${typeLabel}${recordNumber ? `: ${recordNumber}` : ''}`
-              : `Create ${typeLabel}`}
+            {editDoc ? (
+              <>
+                Review {typeLabel}
+                {recordNumber ? (
+                  <>
+                    :{' '}
+                    <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums">
+                      {recordNumber}
+                    </span>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              `Create ${typeLabel}`
+            )}
           </h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
