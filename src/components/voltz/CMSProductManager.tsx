@@ -602,7 +602,7 @@ const CMSProductManager: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
         }
       }
       const processedCustom = await Promise.all(customProducts.map(async (p) => {
-        let updatedProduct = { ...p };
+        const updatedProduct = { ...p };
         // Upload main image
         if (p.image?.startsWith('data:')) {
           try {

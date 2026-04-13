@@ -243,7 +243,7 @@ export function loadCMSSettings(): CMSSettings {
   try {
     const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
-  } catch {}
+  } catch { /* ignore corrupt localStorage */ }
   return DEFAULT_SETTINGS;
 }
 
@@ -255,7 +255,7 @@ export function loadCMSCategories(): CMSCategory[] {
       const parsed = JSON.parse(stored) as CMSCategory[];
       if (parsed.length > 0) return parsed;
     }
-  } catch {}
+  } catch { /* ignore corrupt localStorage */ }
   return DEFAULT_CATEGORIES;
 }
 
@@ -281,7 +281,7 @@ export function loadContactDetails(): ContactDetails {
         out.businessHours.length > 0;
       if (hasData) return out;
     }
-  } catch {}
+  } catch { /* ignore corrupt localStorage */ }
   return DEFAULT_CONTACT_DETAILS;
 }
 
@@ -291,7 +291,7 @@ export function loadCompanyProfile(): CompanyProfileData {
   try {
     const stored = localStorage.getItem(PROFILE_STORAGE_KEY);
     if (stored) return { ...DEFAULT_COMPANY_PROFILE, ...JSON.parse(stored) };
-  } catch {}
+  } catch { /* ignore corrupt localStorage */ }
   return DEFAULT_COMPANY_PROFILE;
 }
 
@@ -310,7 +310,7 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         return Array.from(mergedMap.values()).sort((a, b) => a.order - b.order);
       }
-    } catch {}
+    } catch { /* ignore corrupt localStorage */ }
     return DEFAULT_SECTIONS;
   });
 
@@ -603,7 +603,7 @@ export const CMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.error('[CMS] Failed to save contact_details to DB:', err);
     }
-    try { await broadcastCMSUpdate(); } catch {}
+    try { await broadcastCMSUpdate(); } catch { /* ignore */ }
   }, []);
 
   const updateCompanyProfile = useCallback(async (profile: CompanyProfileData) => {

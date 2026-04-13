@@ -33,7 +33,7 @@ export const CMSAuthProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const parsed = JSON.parse(stored);
         return { isAuthenticated: true, username: parsed.username };
       }
-    } catch {}
+    } catch { /* ignore invalid stored auth */ }
     return { isAuthenticated: false, username: null };
   });
 

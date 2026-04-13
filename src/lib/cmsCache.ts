@@ -77,10 +77,12 @@ function notifyAllListeners(): void {
   }, DEBOUNCE_MS);
 }
 
+const broadcastChannelsWithListener = new WeakSet<BroadcastChannel>();
+
 function initBroadcastListener(): void {
   const ch = getCMSSyncChannel();
-  if (!ch || (ch as any).__voltzListenerAdded) return;
-  (ch as any).__voltzListenerAdded = true;
+  if (!ch || broadcastChannelsWithListener.has(ch)) return;
+  broadcastChannelsWithListener.add(ch);
 
   ch.addEventListener('message', (ev: MessageEvent) => {
     const p = ev.data;

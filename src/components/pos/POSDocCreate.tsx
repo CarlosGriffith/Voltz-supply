@@ -498,7 +498,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
       return;
     }
     setSaving(true);
-    let suppressSuccessToast = false;
+    const suppressSuccessToast = false;
     try {
       let customerId = selectedCustomer?.id;
 

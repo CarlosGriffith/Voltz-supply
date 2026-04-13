@@ -12,7 +12,9 @@ function assertSavedRow(data: unknown, label: string): asserts data is { id: str
   }
 }
 
-function sanitizeItems(items: any): any[] {
+type PosLineItemRow = Record<string, unknown>;
+
+function sanitizeItems(items: unknown): PosLineItemRow[] {
   try {
     let arr: unknown = items;
     if (typeof items === 'string') {
@@ -25,12 +27,15 @@ function sanitizeItems(items: any): any[] {
       arr = [];
     }
     if (!Array.isArray(arr)) return [];
-    return arr.map((item: any) => ({
-      ...item,
-      quantity: Number(item.quantity) || 0,
-      unit_price: Number(item.unit_price) || 0,
-      total: Number(item.total) || 0,
-    }));
+    return arr.map((item: unknown) => {
+      const row = (item && typeof item === 'object' ? item : {}) as PosLineItemRow;
+      return {
+        ...row,
+        quantity: Number(row.quantity) || 0,
+        unit_price: Number(row.unit_price) || 0,
+        total: Number(row.total) || 0,
+      };
+    });
   } catch (e) {
     console.error('sanitizeItems', e);
     return [];

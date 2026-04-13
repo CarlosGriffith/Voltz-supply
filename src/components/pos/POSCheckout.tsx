@@ -297,7 +297,7 @@ function resolvedDocAllocationsForDisplay(item: CheckoutLineItem): { label: stri
       label: a.label,
       qty: Math.max(0, Math.round(Math.floor(Number(a.qty) || 0) * scale)),
     }));
-    let s = scaled.reduce((x, a) => x + a.qty, 0);
+    const s = scaled.reduce((x, a) => x + a.qty, 0);
     if (scaled.length && s !== db) scaled[0] = { ...scaled[0], qty: scaled[0].qty + (db - s) };
     return scaled.filter((x) => x.qty > 0);
   }
@@ -481,7 +481,7 @@ function adjustCheckoutLineQuantity(item: CheckoutLineItem, newQty: number): Che
         label: a.label,
         qty: Math.max(0, Math.round(Math.floor(a.qty) * scale)),
       }));
-      let s = scaled.reduce((x, a) => x + a.qty, 0);
+      const s = scaled.reduce((x, a) => x + a.qty, 0);
       if (scaled.length && s !== newDocBack) scaled[0] = { ...scaled[0], qty: scaled[0].qty + (newDocBack - s) };
       nextAlloc = scaled.filter((x) => x.qty > 0);
     }

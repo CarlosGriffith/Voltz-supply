@@ -68,7 +68,7 @@ export function useLiveFeaturedProducts() {
         versionRef.current = newVersion;
         await loadProducts();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadProducts]);
 
   useEffect(() => {
@@ -119,7 +119,7 @@ export function useLiveSpecialOfferProducts() {
         versionRef.current = newVersion;
         await loadProducts();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadProducts]);
 
   useEffect(() => {
@@ -171,7 +171,7 @@ export function useLiveCategoryProducts(categorySlug: string) {
         versionRef.current = newVersion;
         await loadProducts();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadProducts]);
 
   useEffect(() => {
@@ -222,7 +222,7 @@ export function useLiveCategories() {
         versionRef.current = newVersion;
         await loadCategories();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadCategories]);
 
   useEffect(() => {
@@ -257,7 +257,7 @@ function readSettingsFromLocalStorage(): { hidePrices: boolean } | null {
         return { hidePrices: !!parsed.hidePrices };
       }
     }
-  } catch {}
+  } catch { /* ignore */ }
   return null;
 }
 
@@ -277,7 +277,7 @@ export function useLiveCMSSettings() {
         if (data && typeof data === 'object') {
           const newSettings = { hidePrices: !!data.hidePrices };
           setSettings(newSettings);
-          try { localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(newSettings)); } catch {}
+          try { localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(newSettings)); } catch { /* ignore */ }
         }
         setLoading(false);
       }
@@ -295,7 +295,7 @@ export function useLiveCMSSettings() {
         versionRef.current = newVersion;
         await loadSettings();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadSettings]);
 
   useEffect(() => {
@@ -317,7 +317,7 @@ export function useLiveCMSSettings() {
           if (parsed && typeof parsed === 'object') {
             setSettings({ hidePrices: !!parsed.hidePrices });
           }
-        } catch {}
+        } catch { /* ignore */ }
       }
     };
     window.addEventListener('storage', handleStorageChange);
@@ -362,7 +362,7 @@ export function useLiveSections() {
           return mergeSectionsWithDefaultsStatic(parsed);
         }
       }
-    } catch {}
+    } catch { /* ignore */ }
     return DEFAULT_SECTIONS;
   });
   const [loading, setLoading] = useState(true);
@@ -378,7 +378,7 @@ export function useLiveSections() {
           const merged = mergeSectionsWithDefaultsStatic(data);
           console.log('[LiveCMS] Sections loaded from DB:', merged.length, 'sections,', merged.filter(s => s.visible).length, 'visible');
           setSections(merged);
-          try { localStorage.setItem(SECTIONS_LS_KEY, JSON.stringify(merged)); } catch {}
+          try { localStorage.setItem(SECTIONS_LS_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
         } else {
           console.log('[LiveCMS] No sections in DB, using defaults');
         }
@@ -398,7 +398,7 @@ export function useLiveSections() {
         versionRef.current = newVersion;
         await loadSections();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadSections]);
 
   useEffect(() => {
@@ -432,7 +432,7 @@ export function useLiveSections() {
           if (Array.isArray(parsed) && parsed.length > 0) {
             setSections(mergeSectionsWithDefaultsStatic(parsed));
           }
-        } catch {}
+        } catch { /* ignore */ }
       }
     };
     window.addEventListener('storage', handleStorageChange);
@@ -448,7 +448,7 @@ export function useLiveSections() {
               setSections(mergeSectionsWithDefaultsStatic(parsed));
             }
           }
-        } catch {}
+        } catch { /* ignore */ }
       }
     };
     window.addEventListener('voltz-sections-updated', handleLocalUpdate);
@@ -496,7 +496,7 @@ export function useLiveContactDetails() {
                         (merged.addresses?.length > 0) || (merged.businessHours?.length > 0);
         if (hasData) return merged;
       }
-    } catch {}
+    } catch { /* ignore */ }
     return DEFAULT_CONTACT_DETAILS;
   });
   const [loading, setLoading] = useState(true);
@@ -513,7 +513,7 @@ export function useLiveContactDetails() {
                         (merged.addresses?.length > 0) || (merged.businessHours?.length > 0);
         if (hasData) return merged;
       }
-    } catch {}
+    } catch { /* ignore */ }
     return null;
   }, []);
 
@@ -527,7 +527,7 @@ export function useLiveContactDetails() {
                           (merged.addresses?.length > 0) || (merged.businessHours?.length > 0);
           if (hasData) {
             setContactDetails(merged);
-            try { localStorage.setItem('voltz-cms-contact', JSON.stringify(merged)); } catch {}
+            try { localStorage.setItem('voltz-cms-contact', JSON.stringify(merged)); } catch { /* ignore */ }
             setLoading(false);
             return;
           }
@@ -556,7 +556,7 @@ export function useLiveContactDetails() {
         versionRef.current = newVersion;
         await loadData();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadData]);
 
   useEffect(() => {
@@ -579,7 +579,7 @@ export function useLiveContactDetails() {
           if (hasData) {
             setContactDetails(merged);
           }
-        } catch {}
+        } catch { /* ignore */ }
       }
     };
     window.addEventListener('storage', handleStorageChange);
@@ -636,7 +636,7 @@ export function useLiveCompanyProfile() {
         versionRef.current = newVersion;
         await loadData();
       }
-    } catch {}
+    } catch { /* ignore */ }
   }, [loadData]);
 
   useEffect(() => {
