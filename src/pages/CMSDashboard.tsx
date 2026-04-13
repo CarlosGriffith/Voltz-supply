@@ -25,7 +25,7 @@ import {
   asPosRows,
   POSCustomer, POSQuote, POSOrder, POSInvoice, POSReceipt, POSRefund, POSQuoteRequest, POSSentEmail, POSSmtpSettings, POSLineItem,
   fetchCustomers, saveCustomer, deleteCustomer, fetchQuotes, fetchOrders, fetchInvoices, fetchReceipts, fetchRefunds,
-  fetchQuoteRequests, fetchSentEmails, fetchSmtpSettings, saveSmtpSettings,
+  fetchQuoteRequests, fetchSentEmails, fetchSmtpSettings, saveSmtpSettings, saveQuote,
   convertOrderToInvoice, createOrderFromQuote, createInvoiceFromQuote,
   createOrderFromWebsiteQuoteRequest, createInvoiceFromWebsiteQuoteRequest,
   markInvoicePaidAndDelivered, processRefund, generateDocNumber, sendEmail, fetchCustomerHistory,
@@ -202,6 +202,22 @@ const SectionManagerTab: React.FC = () => {
   );
 };
 
+/** Human label for quote workflow status (toast copy). */
+function posQuoteWorkflowStatusLabel(status: string): string {
+  const m: Record<string, string> = {
+    reviewed: 'Reviewed',
+    printed: 'Printed',
+    emailed: 'Emailed',
+    dormant: 'Dormant',
+    order_generated: 'Order Generated',
+    invoice_generated_unpaid: 'Invoice Generated - Unpaid',
+    invoice_generated_partially_paid: 'Invoice Generated - Partially Paid',
+    invoice_generated_paid: 'Invoice Generated - Paid',
+    processed: 'Processed',
+  };
+  return m[status] || status.replace(/_/g, ' ');
+}
+
 // ─── Status Badge ───
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const colors: Record<string, string> = {
@@ -224,6 +240,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     resent: 'bg-blue-100 text-blue-700',
     printed: 'bg-sky-100 text-sky-800',
     emailed: 'bg-teal-100 text-teal-800',
+    dormant: 'bg-slate-200 text-slate-700',
   };
   const labels: Record<string, string> = {
     new: 'New',
@@ -231,6 +248,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     quoted: 'Quoted',
     printed: 'Printed',
     emailed: 'Emailed',
+    dormant: 'Dormant',
     order_generated: 'Order Generated',
     invoice_generated_unpaid: 'Invoice Generated - Unpaid',
     invoice_generated_partially_paid: 'Invoice Generated - Partially Paid',
@@ -277,8 +295,9 @@ function resolveOrderForQuote(quote: POSQuote, orderList: POSOrder[]): POSOrder 
   return orderList.find((o) => o.quote_id != null && String(o.quote_id) === String(quote.id));
 }
 
+/** Wider + visible overflow so multi-invoice / multi-receipt lines are not clipped (base TooltipContent uses overflow-hidden). */
 const DOC_STATUS_TOOLTIP_CLASS =
-  'max-w-[10rem] rounded-none border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium leading-tight bg-white text-gray-800 shadow-sm';
+  'max-w-[min(28rem,calc(100vw-2rem))] overflow-visible whitespace-normal break-words rounded-none border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium leading-snug bg-white text-gray-800 shadow-sm';
 
 const QuoteOrderInvoiceStatusCell: React.FC<{
   doc: POSQuote | POSOrder;
@@ -432,7 +451,7 @@ const InvoicePaymentReceiptsStatusCell: React.FC<{
   if (ns !== INVOICE_STATUS_PAID && ns !== INVOICE_STATUS_PARTIALLY_PAID) {
     return <StatusBadge status={status} />;
   }
-  const nums = receiptNumbersAssociatedWithInvoice(inv, receipts, invoices);
+  const nums = receiptNumbersAssociatedWithInvoice(inv, receipts);
   const tip =
     nums.length > 0 ? nums.join(', ') : 'No receipt records linked — try Refresh';
   return (
@@ -469,48 +488,60 @@ function sortInvoiceNumbersForDisplay(nums: string[]): string[] {
   });
 }
 
-/** Invoice #s for a receipt: `invoice_links`, primary `invoice_id`, and legacy settlement text in `notes`. */
+/** Invoice #s for a receipt: `pos_receipt_invoice_links` (invoice_links) plus primary `pos_receipts.invoice_id` — API JOIN supplies invoice_number on each link. */
 function invoiceNumbersAssociatedWithReceipt(rec: POSReceipt, invoices: POSInvoice[]): string[] {
   const nums = new Set<string>();
   const linkRows = rec.invoice_links;
   if (Array.isArray(linkRows) && linkRows.length > 0) {
     for (const link of linkRows) {
       if (!link?.invoice_id) continue;
-      const inv = invoices.find((i) => String(i.id) === String(link.invoice_id));
+      const fromApi = (link.invoice_number || '').trim();
+      if (fromApi) {
+        nums.add(fromApi);
+        continue;
+      }
+      const inv = invoices.find((i) => String(i.id).trim() === String(link.invoice_id).trim());
       const n = (inv?.invoice_number || '').trim();
       if (n) nums.add(n);
+      else {
+        const id = String(link.invoice_id || '').trim();
+        if (id) nums.add(id);
+      }
     }
   }
   const primary = rec.invoice_id
-    ? invoices.find((i) => String(i.id) === String(rec.invoice_id))
+    ? invoices.find((i) => String(i.id).trim() === String(rec.invoice_id).trim())
     : undefined;
   const pn = (primary?.invoice_number || '').trim();
   if (pn) nums.add(pn);
-
-  const settlement = (rec.notes || '').match(/Settlement for invoices:\s*(.+)/i);
-  if (settlement) {
-    const segments = settlement[1].split(/\s*\|\s*/);
-    for (const seg of segments) {
-      const beforeDot = seg.trim().split(/\s*·\s*/)[0]?.trim() ?? seg.trim();
-      const firstToken = beforeDot.split(/\s+/)[0]?.trim();
-      if (firstToken) nums.add(firstToken);
-    }
+  else if (rec.invoice_id && (!linkRows || linkRows.length === 0)) {
+    const id = String(rec.invoice_id).trim();
+    if (id) nums.add(id);
   }
 
   return sortInvoiceNumbersForDisplay([...nums]);
 }
 
-/** Receipt #(s) for an invoice: `invoice_id` on the receipt plus combined-checkout settlement lines (same rules as above). */
-function receiptNumbersAssociatedWithInvoice(
-  inv: POSInvoice,
-  receipts: POSReceipt[],
-  allInvoices: POSInvoice[],
-): string[] {
-  const target = (inv.invoice_number || '').trim();
-  if (!target) return [];
-  const linked = receipts.filter((r) =>
-    invoiceNumbersAssociatedWithReceipt(r, allInvoices).includes(target),
-  );
+/** True if this invoice is tied to the receipt via `pos_receipts.invoice_id` or `pos_receipt_invoice_links` (id match; optional invoice_number match from API JOIN). */
+function receiptAppliesToInvoice(rec: POSReceipt, inv: POSInvoice): boolean {
+  const invId = String(inv.id ?? '').trim();
+  const invNum = String(inv.invoice_number ?? '').trim();
+  if (!invId) return false;
+  if (String(rec.invoice_id ?? '').trim() === invId) return true;
+  const links = rec.invoice_links;
+  if (!Array.isArray(links)) return false;
+  return links.some((l) => {
+    if (l?.invoice_id != null && String(l.invoice_id).trim() === invId) return true;
+    if (invNum && (l.invoice_number || '').trim() === invNum) return true;
+    return false;
+  });
+}
+
+/** Receipt #(s) for an invoice — only mapping table + primary receipt invoice_id (same rules as API). */
+function receiptNumbersAssociatedWithInvoice(inv: POSInvoice, receipts: POSReceipt[]): string[] {
+  const invId = String(inv.id ?? '').trim();
+  if (!invId) return [];
+  const linked = receipts.filter((r) => receiptAppliesToInvoice(r, inv));
   linked.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   return linked.map((r) => (r.receipt_number || '').trim()).filter(Boolean);
 }
@@ -638,7 +669,7 @@ function docMatchesPosListSearch(
   const statusText = String(doc.status || (doc as POSInvoice).delivery_status || '').toLowerCase();
   const invoiceLinkedReceiptNumbersText =
     numKey === 'invoice_number'
-      ? receiptNumbersAssociatedWithInvoice(doc as POSInvoice, receipts, invoices)
+      ? receiptNumbersAssociatedWithInvoice(doc as POSInvoice, receipts)
           .map((n) => n.toLowerCase())
           .join(' ')
       : '';
@@ -1456,7 +1487,7 @@ const CMSDashboardInner: React.FC = () => {
                 : '';
             const invoiceLinkedReceiptNumbersText =
               docType === 'invoice'
-                ? receiptNumbersAssociatedWithInvoice(doc as POSInvoice, receipts, invoices)
+                ? receiptNumbersAssociatedWithInvoice(doc as POSInvoice, receipts)
                     .map((n) => n.toLowerCase())
                     .join(' ')
                 : '';
@@ -1690,6 +1721,51 @@ const CMSDashboardInner: React.FC = () => {
                           <DropdownMenuItem onClick={() => printDocument({ type: 'quote', docNumber: doc.quote_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status })}>
                             Print Quote
                           </DropdownMenuItem>
+                          {(doc as POSQuote).status !== 'dormant' ? (
+                            <DropdownMenuItem
+                              onClick={async () => {
+                                const q = doc as POSQuote;
+                                try {
+                                  await saveQuote(
+                                    { ...q, status: 'dormant' },
+                                    { syncLinked: false, skipOrderGeneratedPromotion: true }
+                                  );
+                                  await loadData();
+                                  notify({
+                                    variant: 'success',
+                                    title: 'Quote set to Dormant',
+                                    subtitle: `${q.quote_number} — hidden from checkout customer search; find by quote #.`,
+                                  });
+                                } catch {
+                                  notify({ variant: 'error', title: 'Could not update quote', subtitle: 'POS → Quotes' });
+                                }
+                              }}
+                            >
+                              Set Dormant
+                            </DropdownMenuItem>
+                          ) : (
+                            <DropdownMenuItem
+                              onClick={async () => {
+                                const q = doc as POSQuote;
+                                try {
+                                  const saved = await saveQuote(
+                                    { ...q, status: 'reviewed' },
+                                    { syncLinked: false, skipOrderGeneratedPromotion: true }
+                                  );
+                                  await loadData();
+                                  notify({
+                                    variant: 'success',
+                                    title: 'Quote restored',
+                                    subtitle: `${saved.quote_number} — ${posQuoteWorkflowStatusLabel(saved.status)}.`,
+                                  });
+                                } catch {
+                                  notify({ variant: 'error', title: 'Could not update quote', subtitle: 'POS → Quotes' });
+                                }
+                              }}
+                            >
+                              Restore from Dormant
+                            </DropdownMenuItem>
+                          )}
                           {!(doc as POSQuote).order_id && !(doc as POSQuote).invoice_id && (
                             <DropdownMenuItem
                               onClick={async () => {
@@ -3194,6 +3270,14 @@ const CMSDashboardInner: React.FC = () => {
           source={checkoutSource}
           onBack={goBackPage}
           onCustomersRefresh={refreshCustomers}
+          onAfterSuccessfulCheckout={async () => {
+            try {
+              const r = await fetchReceipts();
+              setReceipts(asPosRows<POSReceipt>(r));
+            } catch (e) {
+              console.error('refresh receipts after checkout:', e);
+            }
+          }}
           onDone={() => {
             setCheckoutSource(null);
             loadData();

@@ -83,7 +83,9 @@ export interface POSQuote {
   customer_phone: string;
   customer_company: string;
   source: 'walk-in' | 'website';
-  status: 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'reviewed' | 'printed' | 'emailed' | 'order_generated' | 'invoice_generated_unpaid' | 'invoice_generated_partially_paid' | 'invoice_generated_paid' | 'processed';
+  status: 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'reviewed' | 'printed' | 'emailed' | 'dormant' | 'order_generated' | 'invoice_generated_unpaid' | 'invoice_generated_partially_paid' | 'invoice_generated_paid' | 'processed';
+  /** Set when status is `dormant`; previous workflow status for restore (server-maintained). */
+  status_before_dormant?: string | null;
   items: POSLineItem[];
   subtotal: number;
   tax_rate: number;
@@ -262,6 +264,8 @@ export function invoiceIsOpenBalance(inv: POSInvoice | null | undefined): boolea
 export interface POSReceiptInvoiceLink {
   invoice_id: string;
   amount_applied: number;
+  /** Populated by GET/POST `/api/pos/receipts` via JOIN — preferred for display vs resolving `invoice_id` client-side. */
+  invoice_number?: string;
 }
 
 export interface POSReceipt {
@@ -1095,7 +1099,14 @@ function normalizeReceiptInvoiceLinks(raw: unknown): POSReceiptInvoiceLink[] {
       const row = l && typeof l === 'object' ? (l as Record<string, unknown>) : {};
       const inv = row.invoice_id != null ? String(row.invoice_id).trim() : '';
       if (!inv) return null;
-      return { invoice_id: inv, amount_applied: Number(row.amount_applied) || 0 };
+      const invNumRaw = row.invoice_number;
+      const invNum =
+        invNumRaw != null && String(invNumRaw).trim() !== '' ? String(invNumRaw).trim() : undefined;
+      return {
+        invoice_id: inv,
+        amount_applied: Number(row.amount_applied) || 0,
+        ...(invNum ? { invoice_number: invNum } : {}),
+      };
     })
     .filter((x): x is POSReceiptInvoiceLink => x != null);
 }

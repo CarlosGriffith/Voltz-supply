@@ -420,25 +420,34 @@ app.get('/api/pos/receipts', async (_req, res) => {
     if (ids.length > 0) {
       const ph = ids.map(() => '?').join(',');
       const [lr] = await pool.query(
-        `SELECT receipt_id, invoice_id, amount_applied FROM pos_receipt_invoice_links WHERE receipt_id IN (${ph})`,
+        `SELECT l.receipt_id, l.invoice_id, l.amount_applied, i.invoice_number AS invoice_number
+         FROM pos_receipt_invoice_links l
+         LEFT JOIN pos_invoices i
+           ON i.id COLLATE utf8mb4_unicode_ci = l.invoice_id COLLATE utf8mb4_unicode_ci
+         WHERE l.receipt_id IN (${ph})`,
         ids
       );
       linkRows = lr || [];
     }
     const byReceipt = new Map();
     for (const l of linkRows) {
-      const rid = String(l.receipt_id ?? '');
+      const rid = String(l.receipt_id ?? '').trim();
       if (!rid) continue;
       if (!byReceipt.has(rid)) byReceipt.set(rid, []);
+      const invNum =
+        l.invoice_number != null && String(l.invoice_number).trim() !== ''
+          ? String(l.invoice_number).trim()
+          : undefined;
       byReceipt.get(rid).push({
         invoice_id: String(l.invoice_id ?? '').trim(),
         amount_applied: Number(l.amount_applied) || 0,
+        ...(invNum ? { invoice_number: invNum } : {}),
       });
     }
     res.json(
       rows.map((r) => ({
         ...r,
-        invoice_links: byReceipt.get(String(r.id ?? '')) ?? [],
+        invoice_links: byReceipt.get(String(r.id ?? '').trim()) ?? [],
       }))
     );
   } catch (e) {
@@ -635,6 +644,31 @@ app.post('/api/pos/quotes', async (req, res) => {
   try {
     const q = req.body;
     const id = q.id || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const normSt = (s) => (s == null ? '' : String(s).trim().toLowerCase());
+    let newStatus = q.status ?? 'reviewed';
+    let statusBeforeDormant = null;
+    if (q.id) {
+      const [[existing]] = await pool.query(
+        'SELECT status, status_before_dormant FROM pos_quotes WHERE id = ?',
+        [q.id]
+      );
+      if (existing) {
+        const ex = normSt(existing.status);
+        const inc = normSt(newStatus);
+        if (inc === 'dormant') {
+          if (ex !== 'dormant') {
+            statusBeforeDormant = existing.status;
+          } else {
+            statusBeforeDormant = existing.status_before_dormant ?? null;
+          }
+        } else if (ex === 'dormant') {
+          const restore = existing.status_before_dormant;
+          newStatus =
+            restore != null && String(restore).trim() !== '' ? String(restore).trim() : 'reviewed';
+          statusBeforeDormant = null;
+        }
+      }
+    }
     const cols = [
       'quote_number',
       'customer_id',
@@ -644,6 +678,7 @@ app.post('/api/pos/quotes', async (req, res) => {
       'customer_company',
       'source',
       'status',
+      'status_before_dormant',
       'items',
       'subtotal',
       'tax_rate',
@@ -665,7 +700,8 @@ app.post('/api/pos/quotes', async (req, res) => {
       q.customer_phone ?? '',
       q.customer_company ?? '',
       q.source ?? 'walk-in',
-      q.status ?? 'reviewed',
+      newStatus,
+      statusBeforeDormant,
       typeof q.items === 'string' ? q.items : JSON.stringify(q.items || []),
       q.subtotal ?? 0,
       q.tax_rate ?? 0,
@@ -905,7 +941,28 @@ app.post('/api/pos/receipts', async (req, res) => {
     }
     await conn.commit();
     const [[row]] = await conn.query('SELECT * FROM pos_receipts WHERE id = ?', [id]);
-    res.json({ ...row, invoice_links: invoiceLinks });
+    let responseLinks = invoiceLinks;
+    if (invoiceLinks.length > 0) {
+      const ph = invoiceLinks.map(() => '?').join(',');
+      const invIds = invoiceLinks.map((x) => x.invoice_id);
+      const [invRows] = await conn.query(
+        `SELECT id, invoice_number FROM pos_invoices WHERE id IN (${ph})`,
+        invIds
+      );
+      const numById = new Map(
+        (invRows || []).map((ir) => [String(ir.id ?? '').trim(), ir.invoice_number])
+      );
+      responseLinks = invoiceLinks.map((link) => {
+        const n = numById.get(String(link.invoice_id).trim());
+        const invNum =
+          n != null && String(n).trim() !== '' ? String(n).trim() : undefined;
+        return {
+          ...link,
+          ...(invNum ? { invoice_number: invNum } : {}),
+        };
+      });
+    }
+    res.json({ ...row, invoice_links: responseLinks });
   } catch (e) {
     try {
       await conn.rollback();

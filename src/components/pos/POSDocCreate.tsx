@@ -670,7 +670,9 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           'processed',
         ];
         let quoteStatus: POSQuote['status'];
-        if (forCheckout) {
+        if (editQ?.status === 'dormant') {
+          quoteStatus = 'dormant';
+        } else if (forCheckout) {
           quoteStatus = editQ?.status || 'reviewed';
         } else {
           quoteStatus = editQ?.status || 'reviewed';

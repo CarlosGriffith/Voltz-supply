@@ -69,6 +69,8 @@ interface POSCheckoutProps {
   onBack?: () => void;
   /** Called after store credit is applied so the host (e.g. CMS) can refresh the customer list from the server. */
   onCustomersRefresh?: () => void | Promise<void>;
+  /** After a successful save (receipts, invoices, etc.); host should refresh receipts so links/tooltips stay correct. */
+  onAfterSuccessfulCheckout?: () => void | Promise<void>;
 }
 
 const fmtMoney = (n: number) => `$${fmtCurrency(n)}`;
@@ -137,6 +139,24 @@ function buildSuggestedReceiptPaymentMethodLabel(params: {
 function num(x: unknown): number {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * One row per invoice id with allocations summed. Avoids duplicate PRIMARY KEY (receipt_id, invoice_id)
+ * when multiple checkout streams hit the same invoice.
+ */
+function mergeReceiptInvoiceLinksFromStreams(
+  withInv: Array<{ invoice: POSInvoice; streamAllocation?: number }>,
+): { invoice_id: string; amount_applied: number }[] {
+  const m = new Map<string, number>();
+  for (const pr of withInv) {
+    const inv = pr.invoice;
+    if (!inv?.id) continue;
+    const id = String(inv.id).trim();
+    const alloc = num(pr.streamAllocation ?? 0);
+    m.set(id, (m.get(id) ?? 0) + alloc);
+  }
+  return [...m.entries()].map(([invoice_id, amount_applied]) => ({ invoice_id, amount_applied }));
 }
 
 /** Whole cents — avoids float drift on dollar comparisons. */
@@ -1317,7 +1337,9 @@ function collectCheckoutEligibleDocsForCustomer(
   blocked: Set<string>
 ): { quotes: POSQuote[]; orders: POSOrder[]; invoices: POSInvoice[] } {
   const invById = new Map(invoices.map((i) => [String(i.id), i]));
-  const quotesForSearch = quotes.filter((q) => !linkedInvoiceIsPaidOff(q, invById, invoices));
+  const quotesForSearch = quotes.filter(
+    (q) => !linkedInvoiceIsPaidOff(q, invById, invoices) && !quoteIsDormantForCheckout(q)
+  );
   const ordersForSearch = orders.filter((o) => !linkedInvoiceIsPaidOff(o, invById, invoices));
   const openInvoices = invoices.filter((x) => invoiceIsOpenBalance(x));
   const matched = [c];
@@ -1336,6 +1358,14 @@ function collectCheckoutEligibleDocsForCustomer(
  * Checks both directions: `doc.invoice_id` → invoice, and invoice.{quote_id|order_id} → doc
  * (the quote row may be missing `invoice_id` even when the invoice references it).
  */
+/**
+ * Dormant quotes are omitted from customer-based suggestions. Explicit quote # search lists them only when
+ * the quote/order/invoice chain is not fully paid (see {@link linkedInvoiceIsPaidOff}).
+ */
+function quoteIsDormantForCheckout(q: POSQuote): boolean {
+  return (q.status || '').toLowerCase() === 'dormant';
+}
+
 function linkedInvoiceIsPaidOff(
   doc: POSQuote | POSOrder,
   invById: Map<string, POSInvoice>,
@@ -1347,6 +1377,17 @@ function linkedInvoiceIsPaidOff(
     if (invoiceIsFullyPaid(inv ?? null)) return true;
   }
   if ('quote_number' in doc) {
+    const q = doc as POSQuote;
+    const oid = q.order_id;
+    if (oid != null && String(oid).trim() !== '') {
+      const paidViaOrder = invoices.some(
+        (inv) =>
+          inv.order_id != null &&
+          String(inv.order_id) === String(oid) &&
+          invoiceIsFullyPaid(inv)
+      );
+      if (paidViaOrder) return true;
+    }
     return invoices.some(
       (inv) =>
         inv.quote_id != null &&
@@ -1708,7 +1749,13 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
   return { invoice, orderId };
 }
 
-const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCustomersRefresh }) => {
+const POSCheckout: React.FC<POSCheckoutProps> = ({
+  source,
+  onDone,
+  onBack,
+  onCustomersRefresh,
+  onAfterSuccessfulCheckout,
+}) => {
   const { notify } = useCMSNotification();
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState<Product[]>([]);
@@ -2026,10 +2073,17 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             : doc.invoice_number;
       return num.toLowerCase().includes(searchQ) || docBlobForMatch(doc).includes(searchQ);
     };
+    /** Dormant quotes: only when typed search hits the quote # and the quote/order/invoice stream is not fully paid (see quotesForSearch). */
+    const matchQuoteForDocSearch = (q: POSQuote) => {
+      if (quoteIsDormantForCheckout(q)) {
+        return q.quote_number.toLowerCase().includes(searchQ);
+      }
+      return match(q);
+    };
     const notBlocked = (doc: POSQuote | POSOrder | POSInvoice) =>
       !checkoutSearchBlockedDocKeys.has(docEntryKey(doc));
     return {
-      quotes: quotesForSearch.filter(match).filter(notBlocked).slice(0, 8),
+      quotes: quotesForSearch.filter(matchQuoteForDocSearch).filter(notBlocked).slice(0, 8),
       orders: ordersForSearch.filter(match).filter(notBlocked).slice(0, 8),
       invoices: openInvoices.filter(match).filter(notBlocked).slice(0, 8),
     };
@@ -2050,7 +2104,9 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       return { quotes: [] as POSQuote[], orders: [] as POSOrder[], invoices: [] as POSInvoice[] };
     }
     const invById = new Map(invoices.map((i) => [String(i.id), i]));
-    const quotesForSearch = quotes.filter((q) => !linkedInvoiceIsPaidOff(q, invById, invoices));
+    const quotesForSearch = quotes.filter(
+      (q) => !linkedInvoiceIsPaidOff(q, invById, invoices) && !quoteIsDormantForCheckout(q)
+    );
     const ordersForSearch = orders.filter((o) => !linkedInvoiceIsPaidOff(o, invById, invoices));
     const openInvoices = invoices.filter((x) => invoiceIsOpenBalance(x));
     const belongs = (doc: POSQuote | POSOrder | POSInvoice) =>
@@ -2674,6 +2730,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           combinedBalanceDueCents
         );
         const receiptNo = await generateDocNumber('receipt');
+        const mergedInvoiceLinks = mergeReceiptInvoiceLinksFromStreams(withInv);
         const rec = await saveReceipt({
           receipt_number: receiptNo,
           invoice_id: primaryInv.id,
@@ -2686,10 +2743,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           items: itemsPayload,
           total: combinedSettlementTotal,
           notes: '',
-          invoice_links: withInv.map((pr) => ({
-            invoice_id: pr.invoice!.id,
-            amount_applied: num(pr.streamAllocation ?? 0),
-          })),
+          invoice_links: mergedInvoiceLinks,
         });
 
         const receiptSettlementInvoices = withInv.map((pr) => {
@@ -2931,7 +2985,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       setCustomerSearch('');
       setShowCustomerDropdown(false);
       setSuppressCrmWalletDisplay(true);
-      // Keep completion fast: refresh reference lists in background.
+      // Keep completion fast: refresh reference lists in background (include host receipt refresh for invoice↔receipt links).
       void (async () => {
         try {
           const [qNext, oNext, iNext, freshCust] = await Promise.all([
@@ -2944,6 +2998,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           setOrders(oNext);
           setInvoices(iNext);
           setCustomers(freshCust);
+          await onAfterSuccessfulCheckout?.();
         } catch (e) {
           console.error('background checkout refresh:', e);
         }
