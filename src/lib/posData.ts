@@ -470,7 +470,14 @@ export async function fetchQuoteRequests(): Promise<POSQuoteRequest[]> {
 }
 
 /** When false, skips pushing this save to linked quote/order/invoice/quote-request rows (avoids loops and duplicate work during checkout). */
-export type POSSaveOptions = { syncLinked?: boolean };
+export type POSSaveOptions = {
+  syncLinked?: boolean;
+  /**
+   * When true, do not promote quote status from `reviewed` to `order_generated` when `order_id` is set.
+   * Used for Save & Checkout before checkout completes so list status stays unchanged until checkout runs.
+   */
+  skipOrderGeneratedPromotion?: boolean;
+};
 
 function buildQuoteRequestProductSummary(items: POSLineItem[], fallbackProduct: string): string {
   const fb = (fallbackProduct || '').trim();
@@ -873,7 +880,12 @@ export async function saveQuote(q: Partial<POSQuote>, opts?: POSSaveOptions): Pr
   const iid = (q as Partial<POSQuote> & { invoice_id?: string | null }).invoice_id;
   const noInvoice = !iid || (typeof iid === 'string' && iid.trim() === '');
   let statusOut = q.status || 'reviewed';
-  if (oid && noInvoice && statusOut === 'reviewed') {
+  if (
+    !opts?.skipOrderGeneratedPromotion &&
+    oid &&
+    noInvoice &&
+    statusOut === 'reviewed'
+  ) {
     statusOut = 'order_generated';
   }
   const data = await apiPost<any>('/api/pos/quotes', {

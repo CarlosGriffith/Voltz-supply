@@ -185,6 +185,66 @@ interface POSDocCreateProps {
   }) => void | Promise<void>;
 }
 
+/** Stable JSON for comparing review form state to last saved / loaded document. */
+function reviewLineSnapshot(i: POSLineItem) {
+  return {
+    product_id: String(i.product_id),
+    product_name: (i.product_name || '').trim(),
+    quantity: safeNum(i.quantity),
+    unit_price: safeNum(i.unit_price),
+  };
+}
+
+function buildReviewFormSnapshot(args: {
+  type: DocType;
+  items: POSLineItem[];
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  customerCompany: string;
+  notes: string;
+  taxRate: number;
+  discountInput: string;
+  selectedCustomerId?: string | null;
+}): string {
+  const itemsPart = args.items.map(reviewLineSnapshot);
+  const phoneDigits = digitsFromPhoneInput(args.customerPhone);
+  const gct = gctPercentForCalculation(args.taxRate);
+  const discount = decimalInputToNumber(args.discountInput);
+  const payload: Record<string, unknown> = {
+    items: itemsPart,
+    customerName: args.customerName.trim(),
+    customerEmail: args.customerEmail.trim().toLowerCase(),
+    phoneDigits,
+    notes: (args.notes || '').trim(),
+    gct,
+    discount,
+    customerId: args.selectedCustomerId ? String(args.selectedCustomerId) : '',
+  };
+  if (args.type === 'quote') {
+    payload.customerCompany = args.customerCompany.trim();
+  }
+  return JSON.stringify(payload);
+}
+
+function buildBaselineFromEditDoc(type: DocType, doc: POSQuote | POSOrder | POSInvoice): string {
+  return buildReviewFormSnapshot({
+    type,
+    items: doc.items || [],
+    customerName: doc.customer_name || '',
+    customerEmail: doc.customer_email || '',
+    customerPhone: doc.customer_phone || '',
+    customerCompany: type === 'quote' ? (doc as POSQuote).customer_company || '' : '',
+    notes: doc.notes || '',
+    taxRate: doc.tax_rate ?? 0,
+    discountInput:
+      doc.discount_amount != null && Number(doc.discount_amount) !== 0
+        ? String(doc.discount_amount)
+        : '',
+    selectedCustomerId: doc.customer_id ? String(doc.customer_id) : null,
+  });
+}
+
 const POSDocCreate: React.FC<POSDocCreateProps> = ({
   type,
   editDoc,
@@ -204,6 +264,9 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   const [invoices, setInvoices] = useState<POSInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedBaseline, setSavedBaseline] = useState<string | null>(() =>
+    editDoc ? buildBaselineFromEditDoc(type, editDoc) : null
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [showSearch, setShowSearch] = useState(false);
@@ -251,6 +314,16 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   useEffect(() => {
     prevMatchedCustomerIdRef.current = null;
   }, [editDoc?.id]);
+
+  useEffect(() => {
+    if (!editDoc) {
+      setSavedBaseline(null);
+      return;
+    }
+    setSavedBaseline(buildBaselineFromEditDoc(type, editDoc));
+    // editDoc is intentionally omitted from deps: reset baseline only when document id changes, not when the parent re-creates the same object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editDoc?.id, type]);
 
   // Link to CRM customer when email or phone matches; on new match, fill all customer fields from the record.
   useEffect(() => {
@@ -470,6 +543,37 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
     return invoiceIsFullyPaid(inv);
   }, [type, editDoc, invoices]);
 
+  const currentFormSnapshot = useMemo(
+    () =>
+      buildReviewFormSnapshot({
+        type,
+        items,
+        customerName,
+        customerEmail,
+        customerPhone,
+        customerCompany,
+        notes,
+        taxRate,
+        discountInput,
+        selectedCustomerId: selectedCustomer?.id ?? null,
+      }),
+    [
+      type,
+      items,
+      customerName,
+      customerEmail,
+      customerPhone,
+      customerCompany,
+      notes,
+      taxRate,
+      discountInput,
+      selectedCustomer?.id,
+    ]
+  );
+
+  const reviewIsClean =
+    !!editDoc && savedBaseline != null && currentFormSnapshot === savedBaseline;
+
   const selectCustomer = (c: POSCustomer) => {
     prevMatchedCustomerIdRef.current = c.id;
     setSelectedCustomer(c);
@@ -501,6 +605,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
     }
     setSaving(true);
     const suppressSuccessToast = false;
+    let baselineUpdate: string | null = null;
     try {
       let customerId = selectedCustomer?.id;
 
@@ -524,6 +629,11 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         discount_amount: discountAmount, total, notes,
       };
 
+      /** Persist document only; linked rows + quote-request status update on checkout (or explicit Save with sync). */
+      const saveOptsCheckout = forCheckout
+        ? ({ syncLinked: false, skipOrderGeneratedPromotion: true } as const)
+        : undefined;
+
       let saved: any = null;
       if (type === 'quote') {
         const editQ = editDoc as POSQuote | undefined;
@@ -535,33 +645,34 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           'invoice_generated_paid',
           'processed',
         ];
-        let quoteStatus: POSQuote['status'] = editQ?.status || 'reviewed';
-        // "Emailed" is set only after sendEmail succeeds (see below), not on this first save.
-        if (websiteLinked && editQ?.status && lockedPipeline.includes(editQ.status)) {
-          quoteStatus = editQ.status;
-        } else if (websiteLinked) {
-          // Save & Checkout: keep quote + linked quote-request status until checkout changes them (e.g. order/invoice).
-          if (
-            forCheckout &&
-            editQ?.status &&
-            !lockedPipeline.includes(editQ.status)
-          ) {
+        let quoteStatus: POSQuote['status'];
+        if (forCheckout) {
+          quoteStatus = editQ?.status || 'reviewed';
+        } else {
+          quoteStatus = editQ?.status || 'reviewed';
+          // "Emailed" is set only after sendEmail succeeds (see below), not on this first save.
+          if (websiteLinked && editQ?.status && lockedPipeline.includes(editQ.status)) {
             quoteStatus = editQ.status;
-          } else if (andPrint) quoteStatus = 'printed';
-          else quoteStatus = 'reviewed';
+          } else if (websiteLinked) {
+            if (andPrint) quoteStatus = 'printed';
+            else quoteStatus = 'reviewed';
+          }
         }
-        saved = await saveQuote({
-          ...baseDoc,
-          quote_number: docNumber,
-          customer_company: customerCompany,
-          source: editQ?.source ?? (prefill?.websiteRequestId ? 'website' : 'walk-in'),
-          status: quoteStatus,
-          website_request_id: editQ?.website_request_id ?? prefill?.websiteRequestId,
-          order_id: editQ?.order_id ?? null,
-          invoice_id: editQ?.invoice_id ?? null,
-          email_sent_at: editQ?.email_sent_at ?? null,
-          valid_until: editQ?.valid_until,
-        });
+        saved = await saveQuote(
+          {
+            ...baseDoc,
+            quote_number: docNumber,
+            customer_company: customerCompany,
+            source: editQ?.source ?? (prefill?.websiteRequestId ? 'website' : 'walk-in'),
+            status: quoteStatus,
+            website_request_id: editQ?.website_request_id ?? prefill?.websiteRequestId,
+            order_id: editQ?.order_id ?? null,
+            invoice_id: editQ?.invoice_id ?? null,
+            email_sent_at: editQ?.email_sent_at ?? null,
+            valid_until: editQ?.valid_until,
+          },
+          saveOptsCheckout
+        );
       } else if (type === 'order') {
         const editO = editDoc as POSOrder | undefined;
         const orderPipelineLocked: POSOrder['status'][] = [
@@ -573,31 +684,54 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         let orderStatus: POSOrder['status'];
         if (editO?.status && orderPipelineLocked.includes(editO.status)) {
           orderStatus = editO.status;
+        } else if (forCheckout && editO?.status) {
+          orderStatus = editO.status;
         } else {
           // Plain Save → Reviewed; Save & Email sets emailed only after send succeeds (below).
           orderStatus = 'reviewed';
         }
-        saved = await saveOrder({
-          ...baseDoc,
-          order_number: docNumber,
-          customer_type: customerId ? 'registered' : 'visitor',
-          status: orderStatus,
-          quote_id: editO?.quote_id ?? null,
-          invoice_id: editO?.invoice_id,
-        });
+        saved = await saveOrder(
+          {
+            ...baseDoc,
+            order_number: docNumber,
+            customer_type: customerId ? 'registered' : 'visitor',
+            status: orderStatus,
+            quote_id: editO?.quote_id ?? null,
+            invoice_id: editO?.invoice_id,
+          },
+          saveOptsCheckout
+        );
       } else {
         const editI = editDoc as POSInvoice | undefined;
-        saved = await saveInvoice({
-          ...baseDoc,
-          invoice_number: docNumber,
-          status: editI?.status || INVOICE_STATUS_UNPAID,
-          delivery_status: editI?.delivery_status || 'pending',
-          order_id: editI?.order_id,
-          quote_id: editI?.quote_id ?? null,
-          amount_paid: editI?.amount_paid ?? 0,
-          payment_method: editI?.payment_method,
-          paid_at: editI?.paid_at,
-          delivered_at: editI?.delivered_at,
+        saved = await saveInvoice(
+          {
+            ...baseDoc,
+            invoice_number: docNumber,
+            status: editI?.status || INVOICE_STATUS_UNPAID,
+            delivery_status: editI?.delivery_status || 'pending',
+            order_id: editI?.order_id,
+            quote_id: editI?.quote_id ?? null,
+            amount_paid: editI?.amount_paid ?? 0,
+            payment_method: editI?.payment_method,
+            paid_at: editI?.paid_at,
+            delivered_at: editI?.delivered_at,
+          },
+          saveOptsCheckout
+        );
+      }
+
+      if (saved) {
+        baselineUpdate = buildReviewFormSnapshot({
+          type,
+          items,
+          customerName,
+          customerEmail,
+          customerPhone,
+          customerCompany,
+          notes,
+          taxRate,
+          discountInput,
+          selectedCustomerId: customerId ?? selectedCustomer?.id ?? null,
         });
       }
 
@@ -744,7 +878,10 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           : 'Failed to save. Please try again.';
       notify({ variant: 'error', title, subtitle: posDocWhere });
       return null;
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+      if (baselineUpdate !== null) setSavedBaseline(baselineUpdate);
+    }
   };
 
 
@@ -840,7 +977,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           <button
             type="button"
             onClick={() => handleSave(false, false)}
-            disabled={saving || reviewLockedForPaidInvoice}
+            disabled={saving || reviewLockedForPaidInvoice || reviewIsClean}
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
           >
             <CheckCircle className="w-4 h-4" /> {saving ? 'Saving...' : 'Save'}
