@@ -174,7 +174,7 @@ export async function getApiHealthDb(): Promise<{
     const crossOrigin = Boolean(base);
     let detail = msg;
     if (isNetwork && crossOrigin) {
-      detail = `${msg}. Likely causes: CSP on your page (add connect-src ${base} https:), CORS (redeploy after server update), mixed HTTP/HTTPS, or an ad blocker blocking netlify.app.`;
+      detail = `${msg}. Often strict Content-Security-Policy (connect-src). This repo sets CSP in netlify.toml — redeploy. Or remove VITE_API_URL so /api is same-origin on your domain. Also check ad blockers and mixed HTTP/HTTPS.`;
     } else if (isNetwork && !crossOrigin) {
       detail = `${msg}. Start the API (npm run dev:api) and use the Vite dev server, or open the app on Netlify.`;
     }
