@@ -620,6 +620,50 @@ function expandLineToStreamPieces(
   return out;
 }
 
+/** Invoices referenced on cart lines that already have payment recorded (for “Payment already received” summary). */
+function collectInvoicesWithPriorPaymentFromCheckoutLines(
+  lineItems: CheckoutLineItem[],
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): POSInvoice[] {
+  const invById = new Map<string, POSInvoice>();
+  const addInv = (inv: POSInvoice | undefined) => {
+    if (!inv) return;
+    const id = String(inv.id);
+    if (!invById.has(id)) invById.set(id, inv);
+  };
+  const fromStreamKey = (key: string) => {
+    if (key.startsWith('invoice:')) {
+      addInv(invoices.find((x) => String(x.id) === key.slice(8)));
+    } else if (key.startsWith('quote:')) {
+      const q = quotes.find((x) => String(x.id) === key.slice(6));
+      if (q?.invoice_id) addInv(invoices.find((x) => String(x.id) === String(q.invoice_id)));
+    } else if (key.startsWith('order:')) {
+      const o = orders.find((x) => String(x.id) === key.slice(6));
+      if (o?.invoice_id) addInv(invoices.find((x) => String(x.id) === String(o.invoice_id)));
+    }
+  };
+  const considerLabel = (label: string) => {
+    const trimmed = String(label || '').trim();
+    if (!trimmed) return;
+    fromStreamKey(resolveLabelToStreamKey(trimmed, quotes, orders, invoices));
+  };
+  for (const row of lineItems) {
+    for (const a of allocationsForMerge(row)) considerLabel(a.label);
+    const lab = stripDocLabelSuffix(row.checkoutDocLabel);
+    if (lab) for (const part of splitDocLabelParts(lab)) considerLabel(part);
+  }
+  const priorPayEps = 0.005;
+  const list = Array.from(invById.values()).filter((inv) => num(inv.amount_paid) > priorPayEps);
+  list.sort((a, b) => {
+    const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return ta - tb;
+  });
+  return list;
+}
+
 function mergeStreamLineGroup(pieces: CheckoutLineItem[]): CheckoutLineItem[] {
   if (pieces.length === 0) return [];
   return pieces.reduce((acc, li) => mergeCheckoutLineItems(acc, [li]), [] as CheckoutLineItem[]);
@@ -1750,6 +1794,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
   const taxAmount = taxAmountFromSubtotalAndGctPercent(subtotal, taxRate);
   const discountAmount = decimalInputToNumber(discountInput);
   const documentTotal = Math.max(0, subtotal + taxAmount - discountAmount);
+
+  const invoicesWithPriorPaymentInCart = useMemo(
+    () => collectInvoicesWithPriorPaymentFromCheckoutLines(lineItems, quotes, orders, invoices),
+    [lineItems, quotes, orders, invoices]
+  );
 
   const itemsTableGridTemplateColumns = useMemo(
     () => itemsTableColLayout.map((w) => `${w}fr`).join(' '),
@@ -3446,16 +3495,36 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                 <span className="text-gray-500">GCT</span>
                 <span className="font-semibold">{fmtMoney(taxAmount)}</span>
               </div>
-              <div className="flex items-center justify-between text-sm gap-2">
-                <span className="text-gray-500">Discount</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="0"
-                  value={discountInput}
-                  onChange={(e) => setDiscountInput(e.target.value)}
-                  className={`w-28 text-right border border-gray-200 rounded-md py-1 px-2 text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
-                />
+              {invoicesWithPriorPaymentInCart.length > 0 && (
+                <div className="flex justify-between text-sm gap-2">
+                  <span className="text-gray-500">
+                    Payment already received
+                    {invoicesWithPriorPaymentInCart.length > 1
+                      ? ` (${invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})`
+                      : ''}
+                  </span>
+                  <span className="font-semibold tabular-nums text-gray-700">
+                    (
+                    {invoicesWithPriorPaymentInCart.map((i) => fmtMoney(num(i.amount_paid))).join(' · ')}
+                    )
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between text-sm gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-gray-500 shrink-0">Discount</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={discountInput}
+                    onChange={(e) => setDiscountInput(e.target.value)}
+                    className={`w-28 text-right border border-gray-200 rounded-md py-1 px-2 text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
+                  />
+                </div>
+                <span className="font-semibold tabular-nums text-gray-700 shrink-0">
+                  ({fmtMoney(discountAmount)})
+                </span>
               </div>
               <div className="flex justify-between text-base font-bold text-[#1a2332] pt-1 border-t border-gray-200">
                 <span>Total</span>
