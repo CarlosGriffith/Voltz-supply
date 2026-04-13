@@ -1834,9 +1834,6 @@ const CMSDashboardInner: React.FC = () => {
                           {docType === 'receipt' && (
                             <>
                               <DropdownMenuItem onClick={() => setViewReceiptPopup(doc as POSReceipt)}>
-                                Review
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setViewReceiptPopup(doc as POSReceipt)}>
                                 View Receipt
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}>
