@@ -2662,25 +2662,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           return num(inv.total);
         });
         const combinedSettlementTotal = Math.round(perStreamInvoiceTotals.reduce((a, b) => a + b, 0) * 100) / 100;
-        const invLines = withInv.map((pr) => {
-          const inv = pr.invoice!;
-          const ord = pr.orderId ? orders.find((x) => String(x.id) === String(pr.orderId)) : undefined;
-          const parts = [`${inv.invoice_number} ${fmtMoney(num(inv.total))}`];
-          if (ord?.order_number) parts.push(`Order ${ord.order_number}`);
-          return parts.join(' · ');
-        });
-        const noteParts: string[] = [`Settlement for invoices: ${invLines.join(' | ')}`];
-        if (creditApplied > 0) noteParts.push(`Store credit ${fmtMoney(creditApplied)}`);
-        if (allowMultiplePaymentMethods && tenderMethodsMulti.length > 0) {
-          const br = tenderMethodsMulti
-            .map((m) =>
-              `${tenderMethodLabel(m)} ${fmtMoney(Math.max(0, decimalInputToNumber(paymentInputsMulti[m] || '')))}`
-            )
-            .join(' · ');
-          if (br.trim()) noteParts.push(br);
-        } else if (tenderAmt > 0) {
-          noteParts.push(`${tenderMethodLabel(paymentMethod)} ${fmtMoney(tenderAmt)}`);
-        }
         let combinedBalanceDueCents = 0;
         for (const pr of persistResults) {
           if (!pr.invoice) continue;
@@ -2704,7 +2685,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           amount_paid: allocationThisCheckout,
           items: itemsPayload,
           total: combinedSettlementTotal,
-          notes: noteParts.join(' — '),
+          notes: '',
           invoice_links: withInv.map((pr) => ({
             invoice_id: pr.invoice!.id,
             amount_applied: num(pr.streamAllocation ?? 0),
@@ -2747,7 +2728,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             amountPaid: num(rec.amount_paid),
             amountReceivedTender: tenderAmt,
             paymentMethod: rec.payment_method,
-            notes: rec.notes || '',
+            notes: '',
             status: rec.status || primaryInv.status,
             receiptLineInvoiceNumbers,
             receiptSettlementInvoices,
@@ -2756,7 +2737,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           {
             mode: 'email',
             companyName: 'Voltz Industrial Supply',
-            previewLayout: 'compact',
           }
         );
         setReceiptPreviewHtml(buildQuotationPreviewSrcDoc(receiptDocHtml));
@@ -2780,7 +2760,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           amountPaid: num(rec.amount_paid),
           amountReceivedTender: tenderAmt,
           paymentMethod: rec.payment_method,
-          notes: rec.notes || '',
+          notes: '',
           status: rec.status || primaryInv.status,
           receiptLineInvoiceNumbers,
           receiptSettlementInvoices,
@@ -2792,26 +2772,12 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           if (!pr.invoice) continue;
           const inv = pr.invoice!;
           const allocationForReceipt = num(pr.streamAllocation ?? (perStreamAllocations ? perStreamAllocations[ridx]! : allocationThisCheckout));
-          const crPart = creditParts[ridx] ?? 0;
           const tnPart = tenderParts[ridx] ?? 0;
           const owedBeforeCents = balanceDueBeforePaymentCents(inv, allocationForReceipt);
           const payType = receiptPaymentTypeFromReceivedVsCombinedBalanceCents(
             moneyToCents(allocationForReceipt),
             owedBeforeCents
           );
-          const noteParts: string[] = [];
-          if (pr.orderId) noteParts.push(`Order Ref: ${pr.orderId}`);
-          if (crPart > 0) noteParts.push(`Store credit ${fmtMoney(crPart)}`);
-          if (allowMultiplePaymentMethods && tenderMethodsMulti.length > 0) {
-            const br = tenderMethodsMulti
-              .map((m) =>
-                `${tenderMethodLabel(m)} ${fmtMoney(Math.max(0, decimalInputToNumber(paymentInputsMulti[m] || '')))}`
-              )
-              .join(' · ');
-            if (br.trim()) noteParts.push(br);
-          } else if (tenderAmt > 0) {
-            noteParts.push(`${tenderMethodLabel(paymentMethod)} ${fmtMoney(tnPart)}`);
-          }
           const receiptNo = await generateDocNumber('receipt');
           const rec = await saveReceipt({
             receipt_number: receiptNo,
@@ -2824,7 +2790,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             amount_paid: allocationForReceipt,
             items: inv.items,
             total: inv.total,
-            notes: noteParts.join(' — '),
+            notes: '',
             invoice_links: [{ invoice_id: inv.id, amount_applied: allocationForReceipt }],
           });
           if (!rec) throw new Error('Receipt could not be saved');
@@ -2851,7 +2817,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               amountPaid: num(rec.amount_paid),
               amountReceivedTender: tnPart,
               paymentMethod: rec.payment_method,
-              notes: rec.notes || '',
+              notes: '',
               status: rec.status || inv.status,
               receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
             },
@@ -2859,7 +2825,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             {
               mode: 'email',
               companyName: 'Voltz Industrial Supply',
-              previewLayout: 'compact',
             }
           );
           setReceiptPreviewHtml(buildQuotationPreviewSrcDoc(receiptDocHtml));
@@ -2883,7 +2848,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             amountPaid: num(rec.amount_paid),
             amountReceivedTender: tnPart,
             paymentMethod: rec.payment_method,
-            notes: rec.notes || '',
+            notes: '',
             status: rec.status || inv.status,
             receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
           };

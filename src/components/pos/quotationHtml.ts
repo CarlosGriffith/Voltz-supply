@@ -154,7 +154,7 @@ export function buildQuotationDocumentHtml(
           ? String(receiptLineInv[rowIdx] ?? '').trim()
           : '';
       const itemNumInner = invLabel
-        ? `<div style="line-height:1.25">${esc(invLabel)}</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
+        ? `<div style="line-height:1.25">${esc(invLabel)}:</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
         : esc(String(sku));
       const uom = item.uom?.trim() || 'EACH';
       const desc = esc(item.product_name);
