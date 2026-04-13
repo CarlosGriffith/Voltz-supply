@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, RotateCcw, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
+  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
 } from 'lucide-react';
 import { Product } from '@/data/products';
 import { fetchCustomProducts, fetchProductOverrides, fetchConfig, updateProductStockCount } from '@/lib/cmsData';
@@ -3202,11 +3202,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                         : 'Undo (nothing to restore)'
                     }
                   >
-                    <RotateCcw
-                      className="h-4 w-4 shrink-0 origin-center scale-x-[1.22] scale-y-[0.92]"
-                      strokeWidth={2.75}
-                      aria-hidden
-                    />
                     Undo
                   </button>
                   <button
