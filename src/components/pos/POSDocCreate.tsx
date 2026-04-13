@@ -1155,10 +1155,23 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             ))}
           </div>
 
-          {/* Totals */}
+          {/* Totals — payment note left of cost summary when prior payment exists */}
           <div className={`${POS_SURFACE_RAISED} p-4`}>
-            <div className="flex justify-end">
-              <div className="w-72 space-y-2">
+            <div className="flex flex-col md:flex-row md:items-stretch gap-4">
+              <div className="flex-1 min-w-0 flex md:items-center md:justify-start justify-start">
+                {isReviewPage && reviewInvoiceForPriorPaymentLine ? (
+                  <p className="text-sm font-medium text-[#1a2332] tabular-nums text-left [overflow-wrap:anywhere]">
+                    Payment Already Received: ${fmtCurrency(safeNum(reviewInvoiceForPriorPaymentLine.amount_paid))}
+                    {type !== 'invoice' ? (
+                      <span className="text-gray-600 font-normal">
+                        {' '}
+                        ({reviewInvoiceForPriorPaymentLine.invoice_number})
+                      </span>
+                    ) : null}
+                  </p>
+                ) : null}
+              </div>
+              <div className="w-full md:w-72 shrink-0 space-y-2 md:ml-auto">
                 <div className="flex justify-between text-sm"><span className="text-gray-500">Subtotal</span><span className="font-semibold text-[#1a2332]">${fmtCurrency(subtotal)}</span></div>
                 {taxAmount > 0 && (
                   <div className="flex justify-between text-sm">
@@ -1178,19 +1191,6 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                     className={`w-20 text-right text-sm border border-gray-200 rounded-md py-1 px-2 ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
                   />
                 </div>
-                {isReviewPage && reviewInvoiceForPriorPaymentLine ? (
-                  <div className="flex justify-between text-sm gap-2">
-                    <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
-                      <span>Payments Already Received</span>
-                      <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
-                        ({reviewInvoiceForPriorPaymentLine.invoice_number})
-                      </span>
-                    </span>
-                    <span className="font-semibold tabular-nums text-gray-700">
-                      (${fmtCurrency(safeNum(reviewInvoiceForPriorPaymentLine.amount_paid))})
-                    </span>
-                  </div>
-                ) : null}
                 <div className="flex justify-between text-lg font-bold border-t border-gray-200 pt-2 mt-2">
                   <span className="text-[#1a2332]">Total</span><span className="text-[#1a2332]">${fmtCurrency(total)}</span>
                 </div>
