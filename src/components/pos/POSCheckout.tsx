@@ -620,7 +620,7 @@ function expandLineToStreamPieces(
   return out;
 }
 
-/** Invoices referenced on cart lines that already have payment recorded (for “Payment Received Already” summary). */
+/** Invoices referenced on cart lines that already have payment recorded (for “Payments Already Received” summary). */
 function collectInvoicesWithPriorPaymentFromCheckoutLines(
   lineItems: CheckoutLineItem[],
   quotes: POSQuote[],
@@ -1799,6 +1799,16 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
     () => collectInvoicesWithPriorPaymentFromCheckoutLines(lineItems, quotes, orders, invoices),
     [lineItems, quotes, orders, invoices]
   );
+  /** Sum of amounts shown on “Payments Already Received” — subtracted from items summary with discount. */
+  const priorPaymentsSubtractSum = useMemo(
+    () => invoicesWithPriorPaymentInCart.reduce((s, i) => s + num(i.amount_paid), 0),
+    [invoicesWithPriorPaymentInCart]
+  );
+  /** Subtotal + GCT − discount − prior payments (matches items footer & payment when no single-doc source). */
+  const itemsSectionNetTotal = useMemo(
+    () => Math.max(0, documentTotal - priorPaymentsSubtractSum),
+    [documentTotal, priorPaymentsSubtractSum]
+  );
 
   const itemsTableGridTemplateColumns = useMemo(
     () => itemsTableColLayout.map((w) => `${w}fr`).join(' '),
@@ -2070,20 +2080,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
 
   const amountDueForPayment = useMemo(() => {
     if (!source) {
-      const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders, invoices);
-      if (specs.length === 0) return 0;
-      let sum = 0;
-      for (const sp of specs) {
-        const f = computeStreamFiscalTotals(
-          sp.lines,
-          gctPercentEffective,
-          subtotal,
-          taxAmount,
-          discountAmount
-        );
-        sum += streamOutstandingWaterfallCap(sp, f, quotes, orders, invoices);
-      }
-      return sum;
+      return itemsSectionNetTotal;
     }
     let inv: POSInvoice | undefined;
     if (source.sourceType === 'invoice') {
@@ -2110,6 +2107,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
     orders,
     source?.sourceDocId,
     documentTotal,
+    itemsSectionNetTotal,
     lineItems,
     subtotal,
     taxAmount,
@@ -3507,11 +3505,13 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               </div>
               {invoicesWithPriorPaymentInCart.length > 0 && (
                 <div className="flex justify-between text-sm gap-2">
-                  <span className="text-gray-500">
-                    Payment Received Already
-                    {meaningfulCheckoutDocNoCount > 1
-                      ? ` (${invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})`
-                      : ''}
+                  <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                    <span>Payments Already Received</span>
+                    {meaningfulCheckoutDocNoCount > 1 ? (
+                      <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
+                        ({invoicesWithPriorPaymentInCart.map((i) => i.invoice_number).join(' · ')})
+                      </span>
+                    ) : null}
                   </span>
                   <span className="font-semibold tabular-nums text-gray-700">
                     (
@@ -3538,7 +3538,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               </div>
               <div className="flex justify-between text-base font-bold text-[#1a2332] pt-1 border-t border-gray-200">
                 <span>Total</span>
-                <span>{fmtMoney(documentTotal)}</span>
+                <span>{fmtMoney(itemsSectionNetTotal)}</span>
               </div>
             </div>
           </div>
@@ -3559,7 +3559,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
             ) : (
               <div>
                 <p className="text-gray-500">Total</p>
-                <p className="text-xl font-bold text-[#1a2332] tabular-nums">{fmtMoney(documentTotal)}</p>
+                <p className="text-xl font-bold text-[#1a2332] tabular-nums">{fmtMoney(itemsSectionNetTotal)}</p>
               </div>
             )}
           </div>
