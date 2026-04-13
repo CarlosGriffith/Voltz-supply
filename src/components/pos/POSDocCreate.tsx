@@ -1001,7 +1001,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                 {recordNumber ? (
                   <>
                     :{' '}
-                    <span className="text-[18px] font-medium leading-snug text-[#1a2332] tabular-nums">
+                    <span className="text-[18px] font-bold leading-snug text-[#1a2332] tabular-nums">
                       {recordNumber}
                     </span>
                   </>
