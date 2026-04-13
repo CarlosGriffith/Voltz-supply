@@ -984,21 +984,26 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
 
       {/* Header — actions only in full-width row below the grid */}
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3">
           <button
             type="button"
             onClick={onBack}
             disabled={saving}
-            className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed shrink-0 mt-0.5"
             aria-busy={saving}
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">
-            {editDoc
-              ? `Review ${typeLabel}${recordNumber ? `: ${recordNumber}` : ''}`
-              : `Create ${typeLabel}`}
-          </h2>
+          {editDoc ? (
+            <div className="min-w-0">
+              <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">Review {typeLabel}</h2>
+              {recordNumber ? (
+                <p className="text-sm font-semibold text-[#1a2332]/75 tracking-tight mt-0.5">{recordNumber}</p>
+              ) : null}
+            </div>
+          ) : (
+            <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">Create {typeLabel}</h2>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <button
