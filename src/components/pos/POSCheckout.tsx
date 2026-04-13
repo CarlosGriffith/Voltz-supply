@@ -703,28 +703,6 @@ function invoiceWithPriorPaymentForStream(
   return inv;
 }
 
-function streamReviewHeading(
-  spec: CheckoutStreamSpec,
-  quotes: POSQuote[],
-  orders: POSOrder[],
-  invoices: POSInvoice[]
-): string {
-  if (spec.key === 'direct') return 'New items';
-  if (spec.key.startsWith('quote:')) {
-    const q = quotes.find((x) => String(x.id) === spec.key.slice(6));
-    return q ? `Quote ${q.quote_number}` : 'Quote';
-  }
-  if (spec.key.startsWith('order:')) {
-    const o = orders.find((x) => String(x.id) === spec.key.slice(6));
-    return o ? `Order ${o.order_number}` : 'Order';
-  }
-  if (spec.key.startsWith('invoice:')) {
-    const inv = invoices.find((x) => String(x.id) === spec.key.slice(8));
-    return inv ? `Invoice ${inv.invoice_number}` : 'Invoice';
-  }
-  return 'Items';
-}
-
 function mergeStreamLineGroup(pieces: CheckoutLineItem[]): CheckoutLineItem[] {
   if (pieces.length === 0) return [];
   return pieces.reduce((acc, li) => mergeCheckoutLineItems(acc, [li]), [] as CheckoutLineItem[]);
@@ -3538,21 +3516,16 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
                     const inv = invoiceWithPriorPaymentForStream(spec, quotes, orders, invoices);
                     if (!inv) return null;
                     return (
-                      <div key={spec.key} className="space-y-1">
-                        <p className="text-[11px] font-semibold text-[#1a2332]">
-                          {streamReviewHeading(spec, quotes, orders, invoices)}
-                        </p>
-                        <div className="flex justify-between text-sm gap-2">
-                          <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
-                            <span>Payments Already Received</span>
-                            <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
-                              ({inv.invoice_number})
-                            </span>
+                      <div key={spec.key} className="flex justify-between text-sm gap-2">
+                        <span className="text-gray-500 inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                          <span>Payments Already Received</span>
+                          <span className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]">
+                            ({inv.invoice_number})
                           </span>
-                          <span className="font-semibold tabular-nums text-gray-700">
-                            ({fmtMoney(num(inv.amount_paid))})
-                          </span>
-                        </div>
+                        </span>
+                        <span className="font-semibold tabular-nums text-gray-700">
+                          ({fmtMoney(num(inv.amount_paid))})
+                        </span>
                       </div>
                     );
                   })
