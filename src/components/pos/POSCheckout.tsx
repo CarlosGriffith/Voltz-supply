@@ -560,12 +560,19 @@ function normDocToken(s: string) {
   return s.trim().toLowerCase();
 }
 
-function resolveLabelToStreamKey(label: string, quotes: POSQuote[], orders: POSOrder[]): string {
+function resolveLabelToStreamKey(
+  label: string,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): string {
   const n = normDocToken(label);
   const q = quotes.find((x) => normDocToken(String(x.quote_number || '')) === n);
   if (q) return `quote:${q.id}`;
   const o = orders.find((x) => normDocToken(String(x.order_number || '')) === n);
   if (o) return `order:${o.id}`;
+  const inv = invoices.find((x) => normDocToken(String(x.invoice_number || '')) === n);
+  if (inv) return `invoice:${inv.id}`;
   return 'direct';
 }
 
@@ -596,7 +603,8 @@ function checkoutLineCloneForStream(
 function expandLineToStreamPieces(
   item: CheckoutLineItem,
   quotes: POSQuote[],
-  orders: POSOrder[]
+  orders: POSOrder[],
+  invoices: POSInvoice[]
 ): { key: string; line: CheckoutLineItem }[] {
   const out: { key: string; line: CheckoutLineItem }[] = [];
   const dq = item.checkoutDirectQty ?? 0;
@@ -606,7 +614,7 @@ function expandLineToStreamPieces(
   const allocs = allocationsForMerge(item);
   for (const a of allocs) {
     if (a.qty <= 0) continue;
-    const key = resolveLabelToStreamKey(a.label, quotes, orders);
+    const key = resolveLabelToStreamKey(a.label, quotes, orders, invoices);
     out.push({ key, line: checkoutLineCloneForStream(item, a.qty, { mode: 'doc', label: a.label }) });
   }
   return out;
@@ -617,7 +625,12 @@ function mergeStreamLineGroup(pieces: CheckoutLineItem[]): CheckoutLineItem[] {
   return pieces.reduce((acc, li) => mergeCheckoutLineItems(acc, [li]), [] as CheckoutLineItem[]);
 }
 
-function buildCheckoutStreamSpecs(lineItems: CheckoutLineItem[], quotes: POSQuote[], orders: POSOrder[]): CheckoutStreamSpec[] {
+function buildCheckoutStreamSpecs(
+  lineItems: CheckoutLineItem[],
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): CheckoutStreamSpec[] {
   const bucket = new Map<string, CheckoutLineItem[]>();
   const add = (key: string, line: CheckoutLineItem) => {
     const arr = bucket.get(key) ?? [];
@@ -626,7 +639,7 @@ function buildCheckoutStreamSpecs(lineItems: CheckoutLineItem[], quotes: POSQuot
   };
   for (const item of lineItems) {
     if (item.includeInTotal === false) continue;
-    for (const { key, line } of expandLineToStreamPieces(item, quotes, orders)) {
+    for (const { key, line } of expandLineToStreamPieces(item, quotes, orders, invoices)) {
       add(key, line);
     }
   }
@@ -638,47 +651,48 @@ function buildCheckoutStreamSpecs(lineItems: CheckoutLineItem[], quotes: POSQuot
         ? { sourceType: 'quote', sourceDocId: key.slice(6) }
         : key.startsWith('order:')
           ? { sourceType: 'order', sourceDocId: key.slice(6) }
-          : null;
+          : key.startsWith('invoice:')
+            ? { sourceType: 'invoice', sourceDocId: key.slice(8) }
+            : null;
     out.push({ key, source, lines: merged });
   }
   return out;
 }
 
-/** Multiple unlinked quote/order streams → separate invoice + order per stream (each quote gets its own order+invoice when applicable). */
-function shouldUseUnlinkedMultiInvoiceCheckout(
-  streams: CheckoutStreamSpec[],
-  quotes: POSQuote[],
-  orders: POSOrder[]
-): boolean {
-  if (streams.length <= 1) return false;
-  for (const s of streams) {
-    if (s.key === 'direct') continue;
-    if (s.source?.sourceType === 'quote') {
-      const q = quotes.find((x) => String(x.id) === String(s.source!.sourceDocId));
-      if (q?.invoice_id != null && String(q.invoice_id).trim() !== '') return false;
-    } else if (s.source?.sourceType === 'order') {
-      const o = orders.find((x) => String(x.id) === String(s.source!.sourceDocId));
-      if (o?.invoice_id != null && String(o.invoice_id).trim() !== '') return false;
-    }
-  }
-  return true;
+/** Multiple document streams (new + quotes/orders/invoices) → one persist pass per stream, oldest document first for payment. */
+function shouldUseMultiStreamCheckout(streams: CheckoutStreamSpec[]): boolean {
+  return streams.length > 1;
 }
 
-/** Standalone checkout: use quote/order source when that single stream is still unlinked; otherwise generic cart (null). */
+/** Standalone checkout: quote/order still unlinked, or invoice # on lines → persist against that invoice when open. */
 function inferStandalonePersistSource(
   spec: CheckoutStreamSpec,
   quotes: POSQuote[],
-  orders: POSOrder[]
+  orders: POSOrder[],
+  invoices: POSInvoice[]
 ): { sourceType: SourceType; sourceDocId: string } | null {
   if (spec.key === 'direct') return null;
   if (spec.source?.sourceType === 'quote') {
     const q = quotes.find((x) => String(x.id) === String(spec.source!.sourceDocId));
     if (q && (q.invoice_id == null || String(q.invoice_id).trim() === '')) return spec.source;
+    if (q?.invoice_id) {
+      const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
+      if (inv && invoiceIsOpenBalance(inv)) return { sourceType: 'invoice', sourceDocId: inv.id };
+    }
     return null;
   }
   if (spec.source?.sourceType === 'order') {
     const o = orders.find((x) => String(x.id) === String(spec.source!.sourceDocId));
     if (o && (o.invoice_id == null || String(o.invoice_id ?? '').trim() === '')) return spec.source;
+    if (o?.invoice_id) {
+      const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
+      if (inv && invoiceIsOpenBalance(inv)) return { sourceType: 'invoice', sourceDocId: inv.id };
+    }
+    return null;
+  }
+  if (spec.source?.sourceType === 'invoice') {
+    const inv = invoices.find((x) => String(x.id) === String(spec.source!.sourceDocId));
+    if (inv && invoiceIsOpenBalance(inv)) return spec.source;
     return null;
   }
   return null;
@@ -714,6 +728,54 @@ function computeStreamFiscalTotals(
   };
 }
 
+/**
+ * Max payment this stream can absorb (waterfall cap): min(cart fiscal for stream, remaining balance on linked invoice if any).
+ */
+function streamOutstandingWaterfallCap(
+  spec: CheckoutStreamSpec,
+  fiscal: StreamFiscal,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): number {
+  const dtot = Math.max(0, num(fiscal.documentTotal));
+  if (spec.key === 'direct') return dtot;
+  if (spec.key.startsWith('quote:')) {
+    const id = spec.key.slice(6);
+    const q = quotes.find((x) => String(x.id) === id);
+    if (!q) return dtot;
+    if (q.invoice_id != null && String(q.invoice_id).trim() !== '') {
+      const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
+      if (inv && invoiceIsOpenBalance(inv)) {
+        const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
+        return Math.min(dtot, rem);
+      }
+    }
+    return dtot;
+  }
+  if (spec.key.startsWith('order:')) {
+    const id = spec.key.slice(6);
+    const o = orders.find((x) => String(x.id) === id);
+    if (!o) return dtot;
+    if (o.invoice_id != null && String(o.invoice_id).trim() !== '') {
+      const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
+      if (inv && invoiceIsOpenBalance(inv)) {
+        const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
+        return Math.min(dtot, rem);
+      }
+    }
+    return dtot;
+  }
+  if (spec.key.startsWith('invoice:')) {
+    const id = spec.key.slice(8);
+    const inv = invoices.find((x) => String(x.id) === id);
+    if (!inv) return dtot;
+    const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
+    return Math.min(dtot, rem);
+  }
+  return dtot;
+}
+
 function splitProportionally(total: number, weights: number[]): number[] {
   if (weights.length === 0) return [];
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -725,8 +787,13 @@ function splitProportionally(total: number, weights: number[]): number[] {
   return rounded;
 }
 
-/** Oldest quote/order first; ad-hoc “direct” lines last (newest). */
-function streamSpecOldestFirstTimestamp(spec: CheckoutStreamSpec, quotes: POSQuote[], orders: POSOrder[]): number {
+/** Oldest quote/order/invoice first (by document created_at); ad-hoc “direct” lines last. */
+function streamSpecOldestFirstTimestamp(
+  spec: CheckoutStreamSpec,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): number {
   if (spec.key === 'direct') return Number.MAX_SAFE_INTEGER;
   if (spec.key.startsWith('quote:')) {
     const id = spec.key.slice(6);
@@ -740,17 +807,24 @@ function streamSpecOldestFirstTimestamp(spec: CheckoutStreamSpec, quotes: POSQuo
     const t = o?.created_at ? new Date(o.created_at).getTime() : 0;
     return Number.isFinite(t) ? t : 0;
   }
+  if (spec.key.startsWith('invoice:')) {
+    const id = spec.key.slice(8);
+    const inv = invoices.find((x) => String(x.id) === id);
+    const t = inv?.created_at ? new Date(inv.created_at).getTime() : 0;
+    return Number.isFinite(t) ? t : 0;
+  }
   return 0;
 }
 
 function sortCheckoutStreamSpecsOldestFirst(
   specs: CheckoutStreamSpec[],
   quotes: POSQuote[],
-  orders: POSOrder[]
+  orders: POSOrder[],
+  invoices: POSInvoice[]
 ): CheckoutStreamSpec[] {
   return [...specs].sort((a, b) => {
-    const ta = streamSpecOldestFirstTimestamp(a, quotes, orders);
-    const tb = streamSpecOldestFirstTimestamp(b, quotes, orders);
+    const ta = streamSpecOldestFirstTimestamp(a, quotes, orders, invoices);
+    const tb = streamSpecOldestFirstTimestamp(b, quotes, orders, invoices);
     if (ta !== tb) return ta - tb;
     return a.key.localeCompare(b.key);
   });
@@ -758,15 +832,15 @@ function sortCheckoutStreamSpecsOldestFirst(
 
 /**
  * Apply store credit, then tender, to streams in array order (oldest → newest).
- * Each stream takes at most its remaining document total; aligns with per-stream receipt `payment_type`.
+ * `streamCaps` = max each stream can absorb (remaining balance on invoice, or fiscal total for new docs).
  */
 function allocatePaymentAcrossStreamsOldestFirst(
-  streamTotals: number[],
+  streamCaps: number[],
   creditApplied: number,
   tenderAmt: number
 ): { perStream: number[]; creditParts: number[]; tenderParts: number[] } {
-  const n = streamTotals.length;
-  const due = streamTotals.map((t) => Math.max(0, num(t)));
+  const n = streamCaps.length;
+  const due = streamCaps.map((t) => Math.max(0, num(t)));
   const creditParts = Array.from({ length: n }, () => 0);
   let credLeft = num(creditApplied);
   for (let i = 0; i < n; i++) {
@@ -1936,7 +2010,22 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
   const storeCreditDisplay = suppressCrmWalletDisplay ? 0 : storeCredit;
 
   const amountDueForPayment = useMemo(() => {
-    if (!source) return documentTotal;
+    if (!source) {
+      const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders, invoices);
+      if (specs.length === 0) return 0;
+      let sum = 0;
+      for (const sp of specs) {
+        const f = computeStreamFiscalTotals(
+          sp.lines,
+          gctPercentEffective,
+          subtotal,
+          taxAmount,
+          discountAmount
+        );
+        sum += streamOutstandingWaterfallCap(sp, f, quotes, orders, invoices);
+      }
+      return sum;
+    }
     let inv: POSInvoice | undefined;
     if (source.sourceType === 'invoice') {
       inv = invoices.find((x) => String(x.id) === String(source.sourceDocId));
@@ -1954,8 +2043,20 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       }
     }
     if (!inv) return documentTotal;
-    return Math.max(0, documentTotal - num(inv.amount_paid));
-  }, [source, invoices, quotes, orders, source?.sourceDocId, documentTotal]);
+    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+  }, [
+    source,
+    invoices,
+    quotes,
+    orders,
+    source?.sourceDocId,
+    documentTotal,
+    lineItems,
+    subtotal,
+    taxAmount,
+    discountAmount,
+    gctPercentEffective,
+  ]);
 
   const PAY_EPS = 0.005;
   const safeAmountDue = Math.max(0, Number(amountDueForPayment) || 0);
@@ -2204,14 +2305,17 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           }),
         ];
       } else {
-        const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders);
-        if (shouldUseUnlinkedMultiInvoiceCheckout(specs, quotes, orders)) {
-          const specsOrdered = sortCheckoutStreamSpecsOldestFirst(specs, quotes, orders);
+        const specs = buildCheckoutStreamSpecs(lineItems, quotes, orders, invoices);
+        if (shouldUseMultiStreamCheckout(specs)) {
+          const specsOrdered = sortCheckoutStreamSpecsOldestFirst(specs, quotes, orders, invoices);
           const fiscals = specsOrdered.map((s) =>
             computeStreamFiscalTotals(s.lines, gctPercentEffective, subtotal, taxAmount, discountAmount)
           );
+          const streamCaps = specsOrdered.map((s, i) =>
+            streamOutstandingWaterfallCap(s, fiscals[i], quotes, orders, invoices)
+          );
           const streamTotals = fiscals.map((f) => f.documentTotal);
-          const wf = allocatePaymentAcrossStreamsOldestFirst(streamTotals, creditApplied, tenderAmt);
+          const wf = allocatePaymentAcrossStreamsOldestFirst(streamCaps, creditApplied, tenderAmt);
           const perStream = wf.perStream;
           perStreamAllocations = perStream;
           multiStreamSettlement = { streamTotals, perStreamAlloc: perStream };
@@ -2231,7 +2335,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               discountAmount: f.discountAmount,
               documentTotal: f.documentTotal,
               allocationThisCheckout: perStreamAllocations[i] ?? 0,
-              amountDueForPayment: f.documentTotal,
+              amountDueForPayment: streamCaps[i] ?? f.documentTotal,
               quotes,
               orders,
               invoices,
@@ -2240,8 +2344,9 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           }
         } else if (specs.length === 1) {
           const spec = specs[0];
-          const inferred = inferStandalonePersistSource(spec, quotes, orders);
+          const inferred = inferStandalonePersistSource(spec, quotes, orders, invoices);
           const f = computeStreamFiscalTotals(spec.lines, gctPercentEffective, subtotal, taxAmount, discountAmount);
+          const streamCap = streamOutstandingWaterfallCap(spec, f, quotes, orders, invoices);
           persistResults = [
             await persistCheckoutDocuments({
               source: inferred,
@@ -2256,7 +2361,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               discountAmount: f.discountAmount,
               documentTotal: f.documentTotal,
               allocationThisCheckout,
-              amountDueForPayment: f.documentTotal,
+              amountDueForPayment: streamCap,
               quotes,
               orders,
               invoices,
