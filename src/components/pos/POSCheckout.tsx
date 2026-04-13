@@ -812,8 +812,39 @@ function computeStreamFiscalTotals(
 }
 
 /**
- * Max payment this stream can absorb (waterfall cap): min(cart fiscal for stream, remaining balance on linked invoice if any).
+ * Remaining balance on an open invoice for this stream, or null if this stream is not paying an existing open invoice
+ * (e.g. direct / unlinked quote creating a new invoice).
  */
+function streamRemainingBalanceIfOpenInvoice(
+  spec: CheckoutStreamSpec,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): number | null {
+  if (spec.key === 'direct') return null;
+  if (spec.key.startsWith('invoice:')) {
+    const inv = invoices.find((x) => String(x.id) === spec.key.slice(8));
+    if (!inv || !invoiceIsOpenBalance(inv)) return null;
+    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+  }
+  if (spec.key.startsWith('quote:')) {
+    const q = quotes.find((x) => String(x.id) === spec.key.slice(6));
+    if (!q?.invoice_id || String(q.invoice_id).trim() === '') return null;
+    const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
+    if (!inv || !invoiceIsOpenBalance(inv)) return null;
+    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+  }
+  if (spec.key.startsWith('order:')) {
+    const o = orders.find((x) => String(x.id) === spec.key.slice(6));
+    if (!o?.invoice_id || String(o.invoice_id).trim() === '') return null;
+    const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
+    if (!inv || !invoiceIsOpenBalance(inv)) return null;
+    return Math.max(0, num(inv.total) - num(inv.amount_paid));
+  }
+  return null;
+}
+
+/** Max tender this stream can absorb: remaining balance on open invoice, else cart fiscal (new sale). */
 function streamOutstandingWaterfallCap(
   spec: CheckoutStreamSpec,
   fiscal: StreamFiscal,
@@ -822,41 +853,19 @@ function streamOutstandingWaterfallCap(
   invoices: POSInvoice[]
 ): number {
   const dtot = Math.max(0, num(fiscal.documentTotal));
-  if (spec.key === 'direct') return dtot;
-  if (spec.key.startsWith('quote:')) {
-    const id = spec.key.slice(6);
-    const q = quotes.find((x) => String(x.id) === id);
-    if (!q) return dtot;
-    if (q.invoice_id != null && String(q.invoice_id).trim() !== '') {
-      const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
-      if (inv && invoiceIsOpenBalance(inv)) {
-        const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
-        return Math.min(dtot, rem);
-      }
-    }
-    return dtot;
-  }
-  if (spec.key.startsWith('order:')) {
-    const id = spec.key.slice(6);
-    const o = orders.find((x) => String(x.id) === id);
-    if (!o) return dtot;
-    if (o.invoice_id != null && String(o.invoice_id).trim() !== '') {
-      const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
-      if (inv && invoiceIsOpenBalance(inv)) {
-        const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
-        return Math.min(dtot, rem);
-      }
-    }
-    return dtot;
-  }
-  if (spec.key.startsWith('invoice:')) {
-    const id = spec.key.slice(8);
-    const inv = invoices.find((x) => String(x.id) === id);
-    if (!inv) return dtot;
-    const rem = Math.max(0, num(inv.total) - num(inv.amount_paid));
-    return Math.min(dtot, rem);
-  }
+  const rem = streamRemainingBalanceIfOpenInvoice(spec, quotes, orders, invoices);
+  if (rem != null) return rem;
   return dtot;
+}
+
+/** Multi-stream checkout paying down existing open invoices: only bump amount_paid — do not rewrite lines/totals from cart. */
+function shouldPaymentOnlyPreserveInvoice(
+  spec: CheckoutStreamSpec,
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): boolean {
+  return streamRemainingBalanceIfOpenInvoice(spec, quotes, orders, invoices) != null;
 }
 
 function splitProportionally(total: number, weights: number[]): number[] {
@@ -1293,6 +1302,11 @@ type PersistCtx = {
   quotes: POSQuote[];
   orders: POSOrder[];
   invoices: POSInvoice[];
+  /**
+   * When true (multi-invoice payment sessions): only add to amount_paid on the saved invoice row — do not overwrite
+   * items/subtotal/tax/discount/total from cart lines (cart is for allocation only).
+   */
+  paymentOnly?: boolean;
 };
 
 /** Single persistence path: new cart vs quote vs order vs invoice — all produce an invoice row when successful. */
@@ -1314,6 +1328,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
     quotes,
     orders,
     invoices,
+    paymentOnly = false,
   } = ctx;
   const sid = source ? String(source.sourceDocId) : '';
   let invoice: POSInvoice | null = null;
@@ -1533,7 +1548,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
   if (!entry) throw new Error('Invoice not found — open checkout again from the invoice');
   const prevPaid = num(entry.amount_paid);
   const newPaid = prevPaid + allocationThisCheckout;
-  const invTotal = num(documentTotal);
+  const invTotal = paymentOnly ? num(entry.total) : num(documentTotal);
   const invoiceStatus =
     newPaid <= 0 ? INVOICE_STATUS_UNPAID : newPaid >= invTotal ? INVOICE_STATUS_PAID : INVOICE_STATUS_PARTIALLY_PAID;
   const linkedDocStatus =
@@ -1542,6 +1557,24 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
       : newPaid > 0
         ? 'invoice_generated_partially_paid'
         : 'invoice_generated_unpaid';
+
+  if (paymentOnly) {
+    invoice = await saveInvoice(
+      {
+        ...entry,
+        customer_id: customerId ?? entry.customer_id,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone,
+        amount_paid: newPaid,
+        status: invoiceStatus,
+      },
+      { syncLinked: false }
+    );
+    orderId = entry.order_id ?? undefined;
+    return { invoice, orderId };
+  }
+
   invoice = await saveInvoice(
     {
       ...entry,
@@ -2389,6 +2422,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
           for (let i = 0; i < specsOrdered.length; i++) {
             const sp = specsOrdered[i];
             const f = fiscals[i];
+            const paymentOnly =
+              specsOrdered.length > 1 && shouldPaymentOnlyPreserveInvoice(sp, quotes, orders, invoices);
             const r = await persistCheckoutDocuments({
               source: sp.source,
               itemsPayload: lineItemsForPersistence(sp.lines),
@@ -2406,6 +2441,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
               quotes,
               orders,
               invoices,
+              paymentOnly,
             });
             persistResults.push(r);
           }
