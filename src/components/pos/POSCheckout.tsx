@@ -592,7 +592,6 @@ function resolveLabelToStreamKey(
   return 'direct';
 }
 
-/** Receipt Item # column: invoice # when stream is an invoice; else linked invoice or quote/order number. */
 function documentNumberForReceiptFromStreamKey(
   key: string,
   quotes: POSQuote[],
@@ -812,7 +811,6 @@ function shouldUseMultiStreamCheckout(streams: CheckoutStreamSpec[]): boolean {
   return streams.length > 1;
 }
 
-/** True when POS was opened from a doc that matches this cart stream (single-stream checkout). */
 function checkoutNavMatchesStreamSpec(
   nav: { sourceType: SourceType; sourceDocId: string } | null | undefined,
   spec: CheckoutStreamSpec
@@ -2462,12 +2460,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({ source, onDone, onBack, onCus
       const allocationThisCheckout = num(creditApplied) + num(tenderAmt);
       const overpayToStoreCredit = Math.max(0, allocationThisCheckout - safeAmountDue);
 
-      // Persistence: one invoice+order chain per cart stream when multiple docs are settled; payment waterfalls oldest-first.
-      // Important: do not branch on navigation `source` alone — opening checkout from one doc while the cart tags lines
-      // to multiple invoices must still run the multi-stream path or excess tender never reaches the second invoice.
       let persistResults: Array<{ invoice: POSInvoice | null; orderId?: string; streamAllocation?: number }> = [];
       let perStreamAllocations: number[] | null = null;
-      /** Set for unlinked multi-stream checkout: totals and INV-ordered waterfall (for combined receipt `payment_type`). */
       let multiStreamSettlement: { streamTotals: number[]; perStreamAlloc: number[] } | null = null;
 
       let invoicesForPayment = invoices;
