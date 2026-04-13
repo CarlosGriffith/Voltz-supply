@@ -1016,6 +1016,17 @@ function friendlySmtpSendError(err) {
   return raw;
 }
 
+/** Resend API + SMTP — used for /api/pos/email/send error JSON. */
+function friendlyPosEmailSendError(err) {
+  const raw = err?.message || String(err);
+  if (
+    /verify a domain|resend\.com\/domains|only send testing emails|testing emails to your own email/i.test(raw)
+  ) {
+    return `${raw} — Add your domain at https://resend.com/domains (DNS), then set “From email” in Email Configuration to an address @that domain. Until verified, Resend only allows sending to your account email for tests.`;
+  }
+  return friendlySmtpSendError(err);
+}
+
 /**
  * Send via Resend HTTPS when RESEND_API_KEY is set.
  * Set EMAIL_TRANSPORT=smtp to force nodemailer even if RESEND_API_KEY exists.
@@ -1172,7 +1183,7 @@ app.post('/api/pos/email/send', async (req, res) => {
     console.error(e);
     res.status(500).json({
       success: false,
-      error: friendlySmtpSendError(e) || 'send failed',
+      error: friendlyPosEmailSendError(e) || 'send failed',
     });
   }
 });

@@ -2893,7 +2893,7 @@ const CMSDashboardInner: React.FC = () => {
                 <strong>AWS SES:</strong> username = access key ID (<code className="text-[10px] bg-blue-100 px-1 rounded">AKIA…</code>); password = SES SMTP password, not the IAM secret key.
               </span>
               <span className="block mt-1 text-blue-800/90">
-                <strong>Connection timeout from Render?</strong> On the <strong>API</strong> (Render), set <code className="text-[10px] bg-blue-100 px-1 rounded">RESEND_API_KEY</code> — HTTPS only, no SMTP. Or fix SES/SendGrid host/port (465 or 587). Gmail often blocks cloud SMTP.
+                <strong>Resend:</strong> verify your domain at resend.com/domains, then use a <strong>From</strong> address @that domain. Until then, tests may only go to your Resend account email. <strong>Timeout?</strong> Set <code className="text-[10px] bg-blue-100 px-1 rounded">RESEND_API_KEY</code> on the Render API (HTTPS, no SMTP).
               </span>
             </p>
           </div>

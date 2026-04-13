@@ -39,7 +39,7 @@ On the **Render** Web Service (not Netlify), set:
 
 Optional: **`EMAIL_TRANSPORT=smtp`** if you must force **SMTP** even when `RESEND_API_KEY` is set.
 
-In **Email Configuration**, set **From email** (and name) to an address/domain allowed in Resend. **SMTP host** can be empty in the DB when using only Resend; **From** must be saved.
+**Domain:** Until you [verify a domain](https://resend.com/domains) in Resend (DNS records), you can usually **only send test mail to your own Resend account email**, and **`from`** must use an allowed sender (e.g. Resend’s onboarding domain or your verified domain). After verification, set **From email** in Email Configuration to **`something@yourdomain.com`**. **SMTP host** can stay empty when using only Resend.
 
 **Option B — SMTP (nodemailer)**  
 If **Send Test** shows **connection timeout**:
