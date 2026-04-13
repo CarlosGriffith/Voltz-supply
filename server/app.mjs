@@ -999,7 +999,7 @@ function friendlySmtpSendError(err) {
   const code = err?.code;
 
   if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || /timeout|timed out|Connection timeout/i.test(raw)) {
-    return `${raw} — SMTP from the server never connected. Fix host/port/provider, or bypass SMTP: set EMAIL_TRANSPORT=resend and RESEND_API_KEY on the API (HTTPS; see RENDER.md).`;
+    return `${raw} — SMTP never connected. Fix host/port/provider, or set RESEND_API_KEY on the API host (Render) — HTTPS, no SMTP (see RENDER.md).`;
   }
   if (code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(raw)) {
     return `${raw} — Connection refused: wrong host/port, or the provider blocks this source network.`;
@@ -1016,12 +1016,13 @@ function friendlySmtpSendError(err) {
   return raw;
 }
 
-/** HTTPS API — no outbound SMTP port; works well from Render when SMTP times out. */
-function isResendTransportEnabled() {
-  return (
-    String(process.env.EMAIL_TRANSPORT || '').toLowerCase() === 'resend' &&
-    String(process.env.RESEND_API_KEY || '').trim() !== ''
-  );
+/**
+ * Send via Resend HTTPS when RESEND_API_KEY is set.
+ * Set EMAIL_TRANSPORT=smtp to force nodemailer even if RESEND_API_KEY exists.
+ */
+function useResendEmail() {
+  if (String(process.env.EMAIL_TRANSPORT || '').toLowerCase() === 'smtp') return false;
+  return String(process.env.RESEND_API_KEY || '').trim() !== '';
 }
 
 async function sendViaResendApi({ smtp, to, subject, htmlBody, attachments }) {
@@ -1077,7 +1078,7 @@ app.post('/api/pos/email/send', async (req, res) => {
     if (!smtp?.host) {
       const [[row]] = await pool.query('SELECT * FROM pos_smtp_settings WHERE id = ?', ['default']);
       if (!row) return res.status(400).json({ error: 'SMTP not configured' });
-      const allowNoHost = isResendTransportEnabled() && String(row.from_email || '').trim() !== '';
+      const allowNoHost = useResendEmail() && String(row.from_email || '').trim() !== '';
       if (!row.host && !allowNoHost) return res.status(400).json({ error: 'SMTP not configured' });
       smtp = normalizeSmtpPayload({
         host: row.host,
@@ -1090,13 +1091,33 @@ app.post('/api/pos/email/send', async (req, res) => {
       });
     }
 
-    if (isResendTransportEnabled() && String(smtp.from_email || '').trim()) {
-      await sendViaResendApi({ smtp, to, subject, htmlBody, attachments });
-      return res.json({ success: true });
+    if (useResendEmail()) {
+      let fromEmail = String(smtp.from_email || '').trim();
+      if (!fromEmail) {
+        const [[r2]] = await pool.query(
+          'SELECT from_email, from_name FROM pos_smtp_settings WHERE id = ?',
+          ['default']
+        );
+        if (r2?.from_email) {
+          smtp = {
+            ...smtp,
+            from_email: r2.from_email,
+            from_name: smtp.from_name || r2.from_name || '',
+          };
+          fromEmail = String(smtp.from_email || '').trim();
+        }
+      }
+      if (fromEmail) {
+        await sendViaResendApi({ smtp, to, subject, htmlBody, attachments });
+        return res.json({ success: true });
+      }
     }
 
     if (!String(smtp.host || '').trim()) {
-      return res.status(400).json({ error: 'SMTP host required (or enable Resend: EMAIL_TRANSPORT=resend + RESEND_API_KEY)' });
+      return res.status(400).json({
+        error:
+          'SMTP host required, or set RESEND_API_KEY on the API (Render) and save From email — see RENDER.md',
+      });
     }
 
     const port = Number(smtp.port) || 587;

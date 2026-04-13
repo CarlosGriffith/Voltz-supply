@@ -33,12 +33,13 @@ Render injects **`PORT`** and **`RENDER`** automatically — do not set `PORT` y
 **Option A — Resend (recommended if SMTP times out)**  
 Uses **HTTPS** only (no outbound SMTP from Render). [Resend](https://resend.com/) signup → API key → verify your domain / sender.
 
-On the Render service set:
+On the **Render** Web Service (not Netlify), set:
 
-- **`EMAIL_TRANSPORT`** = `resend`
-- **`RESEND_API_KEY`** = `re_...`
+- **`RESEND_API_KEY`** = `re_...` (this alone enables Resend for sending)
 
-In **Email Configuration**, set **From email** (and name) to an address/domain allowed in Resend. **SMTP host** can be left unset once saved **From** is stored — or keep any placeholder; sending uses Resend, not those fields.
+Optional: **`EMAIL_TRANSPORT=smtp`** if you must force **SMTP** even when `RESEND_API_KEY` is set.
+
+In **Email Configuration**, set **From email** (and name) to an address/domain allowed in Resend. **SMTP host** can be empty in the DB when using only Resend; **From** must be saved.
 
 **Option B — SMTP (nodemailer)**  
 If **Send Test** shows **connection timeout**:
