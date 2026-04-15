@@ -121,6 +121,255 @@ export function createApp(options = {}) {
     }
     return null;
   }
+
+  const nmInvoiceMoney = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+
+  /** Maps invoice payment/status to allowed pos_orders.status values. */
+  function orderStatusFromInvoiceRow(inv) {
+    const s = String(inv.status ?? 'Unpaid').trim().toLowerCase();
+    if (s.includes('refund')) return 'refunded';
+    if (s.includes('partial')) return 'invoice_generated_partially_paid';
+    if (s.includes('paid')) return 'invoice_generated_paid';
+    const paid = nmInvoiceMoney(inv.amount_paid);
+    const tot = nmInvoiceMoney(inv.total);
+    if (tot > 0 && paid >= tot - 0.009) return 'invoice_generated_paid';
+    if (paid > 0.009) return 'invoice_generated_partially_paid';
+    return 'invoice_generated_unpaid';
+  }
+
+  const sqlIdStr = (v) => {
+    if (v == null) return '';
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) return v.toString('utf8').trim();
+    return String(v).trim();
+  };
+
+  /** True if any `pos_refunds` row applies to this invoice (`invoice_id` or `invoice_links` JSON). */
+  async function refundTouchesInvoice(conn, invoicePk) {
+    const id = sqlIdStr(invoicePk);
+    if (!id) return false;
+    const [rows] = await conn.query(
+      `SELECT invoice_id, invoice_links FROM pos_refunds
+       WHERE invoice_id = ? OR (invoice_links IS NOT NULL AND TRIM(invoice_links) NOT IN ('', 'null', '[]'))`,
+      [id]
+    );
+    for (const r of rows || []) {
+      if (r.invoice_id != null && sqlIdStr(r.invoice_id) === id) return true;
+      const raw = r.invoice_links;
+      if (raw == null || raw === '') continue;
+      try {
+        const links = JSON.parse(typeof raw === 'string' ? raw : String(raw));
+        if (Array.isArray(links) && links.some((l) => l && sqlIdStr(l.invoice_id) === id)) return true;
+      } catch {
+        /* ignore malformed JSON */
+      }
+    }
+    return false;
+  }
+
+  /** Same rule as the POS UI: Paid / Partially Paid + refund rows ⇒ `partially_refunded` on the order. */
+  async function orderStatusFromInvoiceRowConsideringRefunds(conn, inv) {
+    const raw = String(inv.status ?? 'Unpaid').trim().toLowerCase();
+    if (raw === 'refunded') return 'refunded';
+    const hasRef = await refundTouchesInvoice(conn, inv.id);
+    if (hasRef && (raw === 'paid' || raw === 'partially paid')) return 'partially_refunded';
+    return orderStatusFromInvoiceRow(inv);
+  }
+
+  /** Avoid FK failures on pos_orders: only reference existing CRM / quote rows. */
+  async function fkCustomerIdOrNull(conn, customerId) {
+    if (customerId == null || String(customerId).trim() === '') return null;
+    const id = String(customerId).trim();
+    const [[r]] = await conn.query('SELECT id FROM pos_customers WHERE id = ? LIMIT 1', [id]);
+    return r?.id ? id : null;
+  }
+  async function fkQuoteIdOrNull(conn, quoteId) {
+    if (quoteId == null || String(quoteId).trim() === '') return null;
+    const id = String(quoteId).trim();
+    const [[r]] = await conn.query('SELECT id FROM pos_quotes WHERE id = ? LIMIT 1', [id]);
+    return r?.id ? id : null;
+  }
+
+  /**
+   * Keep `pos_orders` in sync with `pos_invoices` when the invoice is edited (same line items, totals, customer).
+   */
+  async function syncLinkedOrderFromInvoice(invoiceId) {
+    const conn = await pool.getConnection();
+    try {
+      const [[inv]] = await conn.query('SELECT * FROM pos_invoices WHERE id = ? LIMIT 1', [invoiceId]);
+      if (!inv) return null;
+      let oid =
+        inv.order_id != null && String(inv.order_id).trim() !== '' ? String(inv.order_id).trim() : '';
+      if (!oid) {
+        const [[claim]] = await conn.query(
+          'SELECT id FROM pos_orders WHERE invoice_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1',
+          [invoiceId]
+        );
+        if (claim?.id) {
+          oid = String(claim.id).trim();
+          await conn.query('UPDATE pos_invoices SET order_id = ? WHERE id = ?', [oid, invoiceId]);
+        }
+      }
+      if (!oid) return null;
+      const [[ord]] = await conn.query('SELECT id FROM pos_orders WHERE id = ? LIMIT 1', [oid]);
+      if (!ord?.id) return null;
+
+      const custId = await fkCustomerIdOrNull(conn, inv.customer_id);
+      const quoteId = await fkQuoteIdOrNull(conn, inv.quote_id);
+      const itemsJson =
+        typeof inv.items === 'string' ? inv.items : JSON.stringify(inv.items != null ? inv.items : []);
+
+      const orderSt = await orderStatusFromInvoiceRowConsideringRefunds(conn, inv);
+
+      await conn.query(
+        `UPDATE pos_orders SET
+          customer_id = ?,
+          customer_name = ?,
+          customer_email = ?,
+          customer_phone = ?,
+          customer_type = ?,
+          status = ?,
+          items = ?,
+          subtotal = ?,
+          tax_rate = ?,
+          tax_amount = ?,
+          discount_amount = ?,
+          total = ?,
+          notes = ?,
+          quote_id = ?,
+          invoice_id = ?
+        WHERE id = ?`,
+        [
+          custId,
+          inv.customer_name ?? '',
+          inv.customer_email ?? '',
+          inv.customer_phone ?? '',
+          custId ? 'registered' : 'visitor',
+          orderSt,
+          itemsJson,
+          nmInvoiceMoney(inv.subtotal),
+          nmInvoiceMoney(inv.tax_rate),
+          nmInvoiceMoney(inv.tax_amount),
+          nmInvoiceMoney(inv.discount_amount),
+          nmInvoiceMoney(inv.total),
+          inv.notes ?? '',
+          quoteId,
+          invoiceId,
+          oid,
+        ]
+      );
+      return true;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /**
+   * Every invoice should have a backing POS order when none exists yet (links `pos_invoices.order_id`).
+   * Creates `pos_orders` from the invoice snapshot and sets `order_id` on the invoice row.
+   *
+   * Also fixes: (1) order row exists but `invoice_id` was never set / wrong; (2) invoice `order_id` points at
+   * another invoice's order — clear and link or create; (3) a `pos_orders` row already references this
+   * invoice via `invoice_id` but `pos_invoices.order_id` was never set — attach without duplicating.
+   */
+  async function ensureInvoiceHasLinkedOrder(invoiceId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[inv]] = await conn.query('SELECT * FROM pos_invoices WHERE id = ? FOR UPDATE', [invoiceId]);
+      if (!inv) {
+        await conn.rollback();
+        return null;
+      }
+      const thisId = String(invoiceId).trim();
+      const oid = inv.order_id != null && String(inv.order_id).trim() !== '' ? String(inv.order_id).trim() : '';
+      if (oid) {
+        const [[existing]] = await conn.query(
+          'SELECT id, invoice_id FROM pos_orders WHERE id = ? LIMIT 1',
+          [oid]
+        );
+        if (existing?.id) {
+          const eInv = existing.invoice_id != null ? String(existing.invoice_id).trim() : '';
+          if (eInv !== '' && eInv !== thisId) {
+            /** This invoice pointed at another document's order — unlink and fall through to claim/create. */
+            await conn.query('UPDATE pos_invoices SET order_id = NULL WHERE id = ?', [invoiceId]);
+          } else {
+            if (eInv !== thisId) {
+              await conn.query('UPDATE pos_orders SET invoice_id = ? WHERE id = ?', [invoiceId, oid]);
+            }
+            await conn.commit();
+            const [[rowFresh]] = await pool.query('SELECT * FROM pos_invoices WHERE id = ?', [invoiceId]);
+            return rowFresh ?? inv;
+          }
+        } else {
+          /** Stale FK: invoice pointed at a deleted/missing order — clear so a new order can be linked. */
+          await conn.query('UPDATE pos_invoices SET order_id = NULL WHERE id = ?', [invoiceId]);
+        }
+      }
+
+      /** Orphan back-link: an order row already names this invoice but the invoice has no (valid) order_id. */
+      const [[claim]] = await conn.query(
+        'SELECT id FROM pos_orders WHERE invoice_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1 FOR UPDATE',
+        [invoiceId]
+      );
+      if (claim?.id) {
+        const claimId = String(claim.id).trim();
+        await conn.query('UPDATE pos_invoices SET order_id = ? WHERE id = ?', [claimId, invoiceId]);
+        await conn.commit();
+        const [[rowFresh]] = await pool.query('SELECT * FROM pos_invoices WHERE id = ?', [invoiceId]);
+        return rowFresh ?? null;
+      }
+
+      const orderNumber = await nextDocNumber(pool, 'order', 'OR-');
+      const orderId = `o-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const itemsJson =
+        typeof inv.items === 'string' ? inv.items : JSON.stringify(inv.items != null ? inv.items : []);
+
+      const custId = await fkCustomerIdOrNull(conn, inv.customer_id);
+      const quoteId = await fkQuoteIdOrNull(conn, inv.quote_id);
+
+      await conn.query(
+        `INSERT INTO pos_orders (id,order_number,customer_id,customer_name,customer_email,customer_phone,customer_type,status,items,subtotal,tax_rate,tax_amount,discount_amount,total,notes,quote_id,invoice_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          orderId,
+          orderNumber,
+          custId,
+          inv.customer_name ?? '',
+          inv.customer_email ?? '',
+          inv.customer_phone ?? '',
+          custId ? 'registered' : 'visitor',
+          orderStatusFromInvoiceRow(inv),
+          itemsJson,
+          nmInvoiceMoney(inv.subtotal),
+          nmInvoiceMoney(inv.tax_rate),
+          nmInvoiceMoney(inv.tax_amount),
+          nmInvoiceMoney(inv.discount_amount),
+          nmInvoiceMoney(inv.total),
+          inv.notes ?? '',
+          quoteId,
+          invoiceId,
+        ]
+      );
+      await conn.query('UPDATE pos_invoices SET order_id = ? WHERE id = ?', [orderId, invoiceId]);
+      await conn.commit();
+      const [[row]] = await pool.query('SELECT * FROM pos_invoices WHERE id = ?', [invoiceId]);
+      return row ?? null;
+    } catch (e) {
+      try {
+        await conn.rollback();
+      } catch {
+        /* ignore */
+      }
+      console.error('[api] ensureInvoiceHasLinkedOrder', e);
+      throw e;
+    } finally {
+      conn.release();
+    }
+  }
+
   const uploadMax = useBlobs
     ? Math.min(
         4 * 1024 * 1024,
@@ -852,15 +1101,59 @@ app.post('/api/pos/invoices', async (req, res) => {
       inv.delivered_at ?? null,
     ];
     const placeholders = cols.map(() => '?').join(',');
-    const updates = cols.map((c) => `${c}=d.${c}`).join(',');
+    /** Do not wipe server-assigned links when the client omits `order_id` / `quote_id` (common on saveInvoice). */
+    const updates = cols
+      .map((c) => {
+        if (c === 'order_id') return 'order_id=COALESCE(d.order_id, pos_invoices.order_id)';
+        if (c === 'quote_id') return 'quote_id=COALESCE(d.quote_id, pos_invoices.quote_id)';
+        return `${c}=d.${c}`;
+      })
+      .join(',');
     await pool.query(
       `INSERT INTO pos_invoices (id,${cols.join(',')}) VALUES (?,${placeholders}) AS d
        ON DUPLICATE KEY UPDATE ${updates}`,
       [id, ...vals]
     );
-    const row = await rowAfterInvoiceUpsert(id, inv.invoice_number ?? '');
+    let row = await rowAfterInvoiceUpsert(id, inv.invoice_number ?? '');
     if (!row) {
       return res.status(500).json({ error: 'Invoice not found after save' });
+    }
+    const invoicePk = String(row.id ?? id).trim();
+    const syncFailMsgs = [];
+    let withOrder = null;
+    try {
+      withOrder = await ensureInvoiceHasLinkedOrder(invoicePk);
+      if (withOrder) row = withOrder;
+    } catch (e) {
+      console.error('[api] pos/invoices: ensure order for invoice', e);
+      syncFailMsgs.push(
+        `Creating or linking the POS order failed: ${String(e?.message || e)}. The invoice may still be saved — try Save again.`
+      );
+    }
+    if (!withOrder && syncFailMsgs.length === 0) {
+      syncFailMsgs.push(
+        'The server could not verify or create a linked POS order for this invoice. Try Save again, or contact support if this continues.'
+      );
+    }
+    try {
+      await syncLinkedOrderFromInvoice(invoicePk);
+    } catch (e) {
+      console.error('[api] pos/invoices: sync order from invoice', e);
+      syncFailMsgs.push(
+        `Updating the linked POS order failed: ${String(e?.message || e)}. Try Save again to resync.`
+      );
+    }
+    const [[fresh]] = await pool.query('SELECT * FROM pos_invoices WHERE id = ? LIMIT 1', [invoicePk]);
+    if (fresh) row = fresh;
+    const hasOrder = row?.order_id != null && String(row.order_id).trim() !== '';
+    let orderSyncError = '';
+    if (!hasOrder) {
+      orderSyncError = syncFailMsgs.length ? syncFailMsgs.join(' ') : 'The invoice saved without a linked POS order. Try Save again.';
+    } else if (syncFailMsgs.length) {
+      orderSyncError = syncFailMsgs.join(' ');
+    }
+    if (orderSyncError) {
+      row = { ...row, _order_sync_error: orderSyncError };
     }
     res.json(row);
   } catch (e) {
@@ -890,6 +1183,12 @@ app.post('/api/pos/receipts', async (req, res) => {
     ];
   }
 
+  const nRecOpt = (v) => {
+    if (v == null || v === '') return null;
+    const x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  };
+
   const cols = [
     'receipt_number',
     'invoice_id',
@@ -901,6 +1200,10 @@ app.post('/api/pos/receipts', async (req, res) => {
     'amount_paid',
     'items',
     'total',
+    'subtotal',
+    'tax_rate',
+    'tax_amount',
+    'discount_amount',
     'notes',
     'created_at',
   ];
@@ -915,6 +1218,10 @@ app.post('/api/pos/receipts', async (req, res) => {
     r.amount_paid ?? 0,
     typeof r.items === 'string' ? r.items : JSON.stringify(r.items || []),
     r.total ?? 0,
+    nRecOpt(r.subtotal),
+    nRecOpt(r.tax_rate),
+    nRecOpt(r.tax_amount),
+    nRecOpt(r.discount_amount),
     r.notes ?? '',
     r.created_at ?? new Date().toISOString().replace('Z', '').slice(0, 23),
   ];
@@ -976,13 +1283,25 @@ app.post('/api/pos/receipts', async (req, res) => {
   }
 });
 
+/** Only REF-########… numbers are valid for POS refunds (matches `sp_next_doc_number` + client). */
+async function resolvePosRefundNumber(pool, id, rawFromClient) {
+  const raw = String(rawFromClient ?? '').trim();
+  if (/^REF-[0-9]+$/.test(raw)) return raw;
+  const [[row]] = await pool.query('SELECT refund_number FROM pos_refunds WHERE id = ? LIMIT 1', [id]);
+  const stored = row ? String(row.refund_number ?? '').trim() : '';
+  if (/^REF-[0-9]+$/.test(stored)) return stored;
+  return nextDocNumber(pool, 'refund', 'REF-');
+}
+
 app.post('/api/pos/refunds', async (req, res) => {
   try {
     const r = req.body;
     const id = r.id || `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const refund_number = await resolvePosRefundNumber(pool, id, r.refund_number);
     const cols = [
       'refund_number',
       'invoice_id',
+      'invoice_links',
       'receipt_id',
       'customer_id',
       'customer_name',
@@ -996,9 +1315,16 @@ app.post('/api/pos/refunds', async (req, res) => {
       'reason',
       'notes',
     ];
+    const invoiceLinksVal =
+      r.invoice_links == null || r.invoice_links === ''
+        ? null
+        : typeof r.invoice_links === 'string'
+          ? r.invoice_links
+          : JSON.stringify(r.invoice_links);
     const vals = [
-      r.refund_number ?? '',
+      refund_number,
       r.invoice_id ?? null,
+      invoiceLinksVal,
       r.receipt_id ?? null,
       r.customer_id ?? null,
       r.customer_name ?? '',

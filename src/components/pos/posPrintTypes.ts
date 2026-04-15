@@ -8,6 +8,8 @@ export interface PrintDocProps {
   customerEmail?: string;
   customerPhone?: string;
   customerCompany?: string;
+  /** Multi-line street / mailing address (shown in Bill To / Ship To when set). */
+  customerAddress?: string;
   /** Shown as "Cust No." — e.g. internal account id */
   customerAccountNo?: string;
   /** Multi-line ship-to; if omitted, matches bill-to block */

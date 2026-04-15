@@ -11,13 +11,27 @@ import POSDocCreate from '@/components/pos/POSDocCreate';
 import POSDashboardView from '@/components/pos/POSDashboard';
 import POSCheckout from '@/components/pos/POSCheckout';
 import { printDocument, generateEmailHTML } from '@/components/pos/POSPrintTemplate';
-import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from '@/components/pos/quotationHtml';
+import {
+  buildQuotationDocumentHtml,
+  buildQuotationPreviewSrcDoc,
+  displayRefundDocNumber,
+} from '@/components/pos/quotationHtml';
+import { buildReceiptPrintDocPropsForPreview, buildRefundPrintDocProps } from '@/components/pos/receiptPreviewProps';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { POS_PAGE_SHELL, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
 import { getApiHealthDb } from '@/lib/api';
 import { broadcastCMSUpdate } from '@/lib/cmsCache';
-import { fmtCurrency, fmtDatePOS, safeNum, DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS, formatSentEmailDocumentDisplay } from '@/lib/utils';
+import {
+  fmtCurrency,
+  fmtDatePOS,
+  safeNum,
+  DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS,
+  formatSentEmailDocumentDisplay,
+  taxAmountFromSubtotalAndGctPercent,
+  digitsFromPhoneInput,
+  formatPhoneUsMask,
+} from '@/lib/utils';
 
 import { saveConfigDetailed, saveConfig as dbSaveConfig, fetchConfig, saveConfig } from '@/lib/cmsData';
 import { usePOSRealtime, useSyncSelectedCustomerFromList } from '@/hooks/usePOSRealtime';
@@ -28,17 +42,26 @@ import {
   fetchQuoteRequests, fetchSentEmails, fetchSmtpSettings, saveSmtpSettings, saveQuote,
   convertOrderToInvoice, createOrderFromQuote, createInvoiceFromQuote,
   createOrderFromWebsiteQuoteRequest, createInvoiceFromWebsiteQuoteRequest,
-  markInvoicePaidAndDelivered, processRefund, generateDocNumber, sendEmail, fetchCustomerHistory,
+  markInvoicePaidAndDelivered, processRefund, processRefundSegments, generateDocNumber, sendEmail, fetchCustomerHistory,
   fetchMergedCustomerHistory, mergePlaceholderCustomerRows,
-  invoiceIsOpenBalance, invoiceCanProcessRefund, latestReceiptIdForInvoice,
+  invoiceIsOpenBalance, invoiceIsFullyPaid,   invoiceCanProcessRefund, latestReceiptIdForInvoice,
+  invoiceLineItemsRemainingForRefund,
   INVOICE_STATUS_PAID, INVOICE_STATUS_UNPAID,
   INVOICE_STATUS_PARTIALLY_PAID,
+  INVOICE_STATUS_REFUNDED,
   normalizeInvoiceStatus,
+  receiptTableDisplayStatus,
+  refundTouchesReceiptRow,
+  refundsTouchingInvoice,
+  invoiceListShowsPartiallyRefunded,
+  invoiceExcludedFromCheckoutDocumentSearch,
+  checkoutDocumentExcludedDueToRefundedInvoice,
+  posOrderCheckoutBlocked,
 } from '@/lib/posData';
 import {
   Layout, Package, LogOut, Settings, ChevronUp, ChevronDown, Eye, EyeOff, GripVertical, Minus, Plus,
   RotateCcw, Save, Check, X, User, Home, Shield, FolderOpen, DollarSign, Phone, Building2, AlertTriangle,
-  ShoppingCart, ShoppingBag, FileText, Receipt, Users, MessageSquare, Mail, RefreshCw, Printer, Send, Search,
+  ShoppingCart, ShoppingBag, FileText, Receipt, Users, MessageSquare, Mail, RefreshCw, Send, Search,
   ChevronRight, BarChart3, Clock, CreditCard, Truck, RotateCcw as Undo, ArrowRight, ExternalLink,
   Menu, ChevronLeft, Wifi, ArrowLeft,
 } from 'lucide-react';
@@ -69,6 +92,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { CMSNotificationProvider, useCMSNotification } from '@/contexts/CMSNotificationContext';
+import {
+  PosActionsFa,
+  POS_MENU_FA,
+  PosCustomerFormTitleFa,
+  PosListPageTitleFa,
+  posListPageKindFromDocType,
+} from '@/components/pos/posActionMenuIcons';
 
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/6995573664728a165adc7a9f_1772110039178_7206a7df.png';
@@ -214,6 +244,8 @@ function posQuoteWorkflowStatusLabel(status: string): string {
     invoice_generated_partially_paid: 'Invoice Generated - Partially Paid',
     invoice_generated_paid: 'Invoice Generated - Paid',
     processed: 'Processed',
+    partially_refunded: 'Partially Refunded',
+    refunded: 'Refunded',
   };
   return m[status] || status.replace(/_/g, ' ');
 }
@@ -236,11 +268,13 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     closed: 'bg-gray-100 text-gray-600',
     approved: 'bg-green-100 text-green-700',
     pending_approval: 'bg-amber-100 text-amber-900',
+    'Partially Refunded': 'bg-orange-100 text-orange-800',
     failed: 'bg-red-100 text-red-700',
     resent: 'bg-blue-100 text-blue-700',
     printed: 'bg-sky-100 text-sky-800',
     emailed: 'bg-teal-100 text-teal-800',
     dormant: 'bg-slate-200 text-slate-700',
+    partially_refunded: 'bg-orange-100 text-orange-800',
   };
   const labels: Record<string, string> = {
     new: 'New',
@@ -255,6 +289,8 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     invoice_generated_paid: 'Invoice Generated - Paid',
     approved: 'Approved',
     pending_approval: 'Pending Approval',
+    refunded: 'Refunded',
+    partially_refunded: 'Partially Refunded',
   };
   const label = labels[status] || status;
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${colors[status] || 'bg-gray-100 text-gray-600'}`}>{label}</span>;
@@ -304,10 +340,82 @@ const QuoteOrderInvoiceStatusCell: React.FC<{
   docType: 'quote' | 'order';
   invoiceList: POSInvoice[];
   orderList: POSOrder[];
+  refunds: POSRefund[];
   onOpenInvoice: (invoiceNumber: string) => void;
   onOpenOrder: (orderNumber: string) => void;
-}> = ({ doc, docType, invoiceList, orderList, onOpenInvoice, onOpenOrder }) => {
+}> = ({ doc, docType, invoiceList, orderList, refunds, onOpenInvoice, onOpenOrder }) => {
   const status = doc.status || '';
+  const linkedInv = resolveInvoiceForQuoteOrOrder(doc, docType, invoiceList);
+  const invRefunded =
+    linkedInv != null && normalizeInvoiceStatus(linkedInv.status) === INVOICE_STATUS_REFUNDED;
+  const rowSaysRefunded = (status || '').toLowerCase() === 'refunded';
+
+  if (
+    docType === 'order' &&
+    linkedInv &&
+    invoiceListShowsPartiallyRefunded(linkedInv, refunds) &&
+    isInvoiceGeneratedRowStatus(status)
+  ) {
+    const invNum = String(linkedInv.invoice_number || '').trim();
+    const tip = invNum || 'Not linked in list — try Refresh';
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              if (invNum) onOpenInvoice(invNum);
+            }}
+            className={`inline-flex max-w-full rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
+              invNum ? 'cursor-pointer' : 'cursor-default opacity-90'
+            }`}
+            aria-label={invNum ? `Open ${invNum} on Invoices page` : 'Linked document unavailable'}
+          >
+            <StatusBadge status="Partially Refunded" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
+          <p className="m-0">{tip}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (
+    (docType === 'order' || docType === 'quote') &&
+    (invRefunded || rowSaysRefunded)
+  ) {
+    const inv = linkedInv;
+    const tip = inv?.invoice_number?.trim()
+      ? inv.invoice_number
+      : 'Not linked in list — try Refresh';
+    const canNav = Boolean(inv?.invoice_number?.trim());
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              if (inv?.invoice_number?.trim()) onOpenInvoice(inv.invoice_number.trim());
+            }}
+            className={`inline-flex max-w-full rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
+              canNav ? 'cursor-pointer' : 'cursor-default opacity-90'
+            }`}
+            aria-label={
+              canNav && inv?.invoice_number
+                ? `Open invoice ${inv.invoice_number} on Invoices page`
+                : 'Linked invoice unavailable'
+            }
+          >
+            <StatusBadge status="Refunded" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
+          <p className="m-0">{tip}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   if (isInvoiceGeneratedRowStatus(status)) {
     const inv = resolveInvoiceForQuoteOrOrder(doc, docType, invoiceList);
@@ -402,15 +510,16 @@ const QuoteRequestQuotedStatusCell: React.FC<{
   );
 };
 
-/** Invoices list: Unpaid shows linked order # on hover; click opens Orders filtered by that order. Paid / Partially Paid show receipt #s; click opens Receipts. */
+/** Invoices list: Unpaid shows linked order # on hover; click opens Orders filtered by that order. Paid / Partially Paid / Refunded show receipt #s on hover (Refunded); click opens Receipts filtered by invoice #. */
 const InvoicePaymentReceiptsStatusCell: React.FC<{
   inv: POSInvoice;
   receipts: POSReceipt[];
   orders: POSOrder[];
   invoices: POSInvoice[];
+  refunds: POSRefund[];
   onOpenReceiptsByInvoice: (invoiceNumber: string) => void;
   onOpenOrder: (orderNumber: string) => void;
-}> = ({ inv, receipts, orders, invoices, onOpenReceiptsByInvoice, onOpenOrder }) => {
+}> = ({ inv, receipts, orders, invoices, refunds, onOpenReceiptsByInvoice, onOpenOrder }) => {
   const status = inv.status || '';
   const ns = normalizeInvoiceStatus(status);
 
@@ -448,9 +557,45 @@ const InvoicePaymentReceiptsStatusCell: React.FC<{
     );
   }
 
+  if (ns === INVOICE_STATUS_REFUNDED) {
+    const receiptNums = receiptNumbersAssociatedWithInvoice(inv, receipts);
+    const tip =
+      receiptNums.length > 0 ? receiptNums.join(', ') : 'No receipt linked — try Refresh';
+    const invNum = String(inv.invoice_number || '').trim();
+    const canNav = Boolean(invNum);
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              if (invNum) onOpenReceiptsByInvoice(invNum);
+            }}
+            className={`inline-flex max-w-full rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
+              canNav ? 'cursor-pointer' : 'cursor-default opacity-90'
+            }`}
+            aria-label={
+              canNav
+                ? `Open Receipts with search ${invNum} to show linked receipt(s)`
+                : 'Invoice number unavailable'
+            }
+          >
+            <StatusBadge status={status} />
+        </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
+          <p className="m-0">{tip}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
   if (ns !== INVOICE_STATUS_PAID && ns !== INVOICE_STATUS_PARTIALLY_PAID) {
     return <StatusBadge status={status} />;
   }
+  const refundRowsForPartial = refundsTouchingInvoice(inv, refunds);
+  const displayStatus =
+    refundRowsForPartial.length > 0 ? 'Partially Refunded' : status;
   const nums = receiptNumbersAssociatedWithInvoice(inv, receipts);
   const tip =
     nums.length > 0 ? nums.join(', ') : 'No receipt records linked — try Refresh';
@@ -467,7 +612,7 @@ const InvoicePaymentReceiptsStatusCell: React.FC<{
               : `View receipts for invoice ${inv.invoice_number}`
           }
         >
-          <StatusBadge status={status} />
+          <StatusBadge status={displayStatus} />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -478,6 +623,22 @@ const InvoicePaymentReceiptsStatusCell: React.FC<{
 };
 
 const RECEIPT_STATUSES_WITH_INVOICE_LINK = new Set(['approved', 'pending_approval']);
+
+/** REF-* numbers for refunds tied to this receipt (display form), oldest first, unique. */
+function refundDocNumbersForReceiptTouch(rec: POSReceipt, refunds: POSRefund[]): string[] {
+  const relevant = refunds.filter((rf) => refundTouchesReceiptRow(rf, rec));
+  relevant.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const rf of relevant) {
+    const d = displayRefundDocNumber(rf.refund_number).trim();
+    if (d && !seen.has(d)) {
+      seen.add(d);
+      out.push(d);
+    }
+  }
+  return out;
+}
 
 function sortInvoiceNumbersForDisplay(nums: string[]): string[] {
   return [...nums].sort((a, b) => {
@@ -522,6 +683,39 @@ function invoiceNumbersAssociatedWithReceipt(rec: POSReceipt, invoices: POSInvoi
   return sortInvoiceNumbersForDisplay([...nums]);
 }
 
+/** Resolved invoice rows for a receipt (primary `invoice_id` + every `invoice_links` entry). Omits ids missing from `allInvoices`. */
+function invoicesAssociatedWithReceipt(rec: POSReceipt, allInvoices: POSInvoice[]): POSInvoice[] {
+  const byId = new Map<string, POSInvoice>();
+  for (const inv of allInvoices) {
+    const id = String(inv.id ?? '').trim();
+    if (id) byId.set(id, inv);
+  }
+  const ids = new Set<string>();
+  const addId = (raw: string | null | undefined) => {
+    const id = String(raw ?? '').trim();
+    if (id) ids.add(id);
+  };
+  addId(rec.invoice_id);
+  const links = rec.invoice_links;
+  if (Array.isArray(links)) {
+    for (const l of links) addId(l?.invoice_id);
+  }
+  const out: POSInvoice[] = [];
+  for (const id of ids) {
+    const inv = byId.get(id);
+    if (inv) out.push(inv);
+  }
+  out.sort((a, b) => {
+    const na = (a.invoice_number || '').trim();
+    const nb = (b.invoice_number || '').trim();
+    const ma = /^INV-(\d+)$/i.exec(na);
+    const mb = /^INV-(\d+)$/i.exec(nb);
+    if (ma && mb) return parseInt(ma[1], 10) - parseInt(mb[1], 10);
+    return na.localeCompare(nb);
+  });
+  return out;
+}
+
 /** True if this invoice is tied to the receipt via `pos_receipts.invoice_id` or `pos_receipt_invoice_links` (id match; optional invoice_number match from API JOIN). */
 function receiptAppliesToInvoice(rec: POSReceipt, inv: POSInvoice): boolean {
   const invId = String(inv.id ?? '').trim();
@@ -546,16 +740,55 @@ function receiptNumbersAssociatedWithInvoice(inv: POSInvoice, receipts: POSRecei
   return linked.map((r) => (r.receipt_number || '').trim()).filter(Boolean);
 }
 
-/** Receipts list: Approved / Pending Approval show linked invoice #(s) on hover; click opens Invoices filtered by receipt #. */
+/** Receipts list: Approved / Pending — invoice-linked statuses show invoice #(s) on hover (or REF #(s) when refunded); click opens Invoices or Refunds filtered by this receipt #. */
 const ReceiptLinkedInvoiceStatusCell: React.FC<{
   rec: POSReceipt;
   invoices: POSInvoice[];
+  refunds: POSRefund[];
   onOpenInvoiceByReceiptSearch: (receiptNumber: string) => void;
-}> = ({ rec, invoices, onOpenInvoiceByReceiptSearch }) => {
+  onOpenRefundsByReceiptSearch: (receiptNumber: string) => void;
+}> = ({ rec, invoices, refunds, onOpenInvoiceByReceiptSearch, onOpenRefundsByReceiptSearch }) => {
   const status = rec.status || '';
+  const displayStatus = receiptTableDisplayStatus(rec, invoices, refunds);
   if (!RECEIPT_STATUSES_WITH_INVOICE_LINK.has((status || '').toLowerCase())) {
-    return <StatusBadge status={status} />;
+    return <StatusBadge status={displayStatus} />;
   }
+
+  const dsNorm = displayStatus.trim().toLowerCase();
+  const isRefundDerived = dsNorm === 'refunded' || dsNorm === 'partially refunded';
+  const recNum = (rec.receipt_number || '').trim();
+
+  if (isRefundDerived) {
+    const refNums = refundDocNumbersForReceiptTouch(rec, refunds);
+    const tip = refNums.length > 0 ? refNums.join(', ') : 'No refund linked — try Refresh';
+    const canNav = Boolean(recNum);
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              if (recNum) onOpenRefundsByReceiptSearch(recNum);
+            }}
+            className={`inline-flex max-w-full rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
+              canNav ? 'cursor-pointer' : 'cursor-default opacity-90'
+            }`}
+            aria-label={
+              canNav
+                ? `Open Refunds with search ${recNum} for refund(s) on this receipt`
+                : 'Receipt number unavailable'
+            }
+          >
+            <StatusBadge status={displayStatus} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
+          <p className="m-0">{tip}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
   const invNums = invoiceNumbersAssociatedWithReceipt(rec, invoices);
   const tip = invNums.length > 0 ? invNums.join(', ') : 'No invoice linked — try Refresh';
   const ariaInvoices = invNums.length > 0 ? invNums.join(', ') : 'linked';
@@ -572,7 +805,7 @@ const ReceiptLinkedInvoiceStatusCell: React.FC<{
               : 'Open Invoices filtered by this receipt'
           }
         >
-          <StatusBadge status={status} />
+          <StatusBadge status={displayStatus} />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -594,6 +827,16 @@ function stripQuoteRequestProductQtyDisplay(raw: string): string {
 }
 
 const fmtMoney = (n: unknown) => `$${fmtCurrency(n)}`;
+
+/** Pre-tax sum of selected refund lines (qty × unit) — matches {@link processRefund} line subtotals. */
+function refundSelectionSubtotal(lines: POSLineItem[]): number {
+  return lines.reduce((s, i) => s + safeNum(i.quantity) * safeNum(i.unit_price), 0);
+}
+
+/** GCT on refund selection; uses invoice tax % (same as `processRefund` / `processRefundSegments`). */
+function refundTaxForSelection(subtotal: number, taxRatePercent: unknown): number {
+  return taxAmountFromSubtotalAndGctPercent(subtotal, Number(taxRatePercent) || 0);
+}
 
 /** Prefer `quote_id` on the request; then denormalized `quote_number`; then `website_request_id` on quotes (legacy). */
 function findQuoteForWebsiteRequest(qr: POSQuoteRequest, quoteList: POSQuote[]): POSQuote | undefined {
@@ -800,24 +1043,6 @@ function posInvoiceToEmailPreviewProps(i: POSInvoice): PrintDocProps {
   };
 }
 
-function posReceiptToEmailPreviewProps(r: POSReceipt): PrintDocProps {
-  return {
-    type: 'receipt',
-    docNumber: r.receipt_number,
-    date: r.created_at,
-    customerName: r.customer_name,
-    customerAccountNo: r.customer_id,
-    items: r.items || [],
-    subtotal: r.total,
-    total: r.total,
-    amountPaid: r.amount_paid,
-    paymentMethod: r.payment_method,
-    notes: r.notes || undefined,
-    status: r.status,
-  };
-}
-
-
 // ─── Main CMS Dashboard ───
 const CMSDashboardInner: React.FC = () => {
   const { notify } = useCMSNotification();
@@ -875,6 +1100,9 @@ const CMSDashboardInner: React.FC = () => {
     [customers]
   );
   const [checkoutSource, setCheckoutSource] = useState<{ sourceType: 'quote' | 'order' | 'invoice'; sourceDocId: string } | null>(null);
+  /** After Exchange refund: Checkout opens with this customer + intro dialog + Pay with Store Credit. */
+  const [checkoutExchangeHandoff, setCheckoutExchangeHandoff] = useState<{ customerId: string } | null>(null);
+  const [checkoutExchangeNavKey, setCheckoutExchangeNavKey] = useState(0);
   /** Page to return to when leaving checkout via Back / Complete (unless cleared by navTo). */
   const [checkoutReturnPage, setCheckoutReturnPage] = useState<PageKey | null>(null);
   /** Where the user opened the quote editor from (Quotes list vs Quote Requests); drives Back on pos-create-quote. */
@@ -883,10 +1111,12 @@ const CMSDashboardInner: React.FC = () => {
   const [viewOrderPopup, setViewOrderPopup] = useState<POSOrder | null>(null);
   const [viewInvoicePopup, setViewInvoicePopup] = useState<POSInvoice | null>(null);
   const [viewReceiptPopup, setViewReceiptPopup] = useState<POSReceipt | null>(null);
+  const [viewRefundPopup, setViewRefundPopup] = useState<POSRefund | null>(null);
   const [quotesSearch, setQuotesSearch] = useState('');
   const [ordersSearch, setOrdersSearch] = useState('');
   const [invoicesSearch, setInvoicesSearch] = useState('');
   const [receiptsSearch, setReceiptsSearch] = useState('');
+  const [refundsSearch, setRefundsSearch] = useState('');
   const [quoteRequestsSearch, setQuoteRequestsSearch] = useState('');
   const viewQuotePopupHtml = useMemo(() => {
     if (!viewQuotePopup) return '';
@@ -939,7 +1169,8 @@ const CMSDashboardInner: React.FC = () => {
   const viewReceiptPopupHtml = useMemo(() => {
     if (!viewReceiptPopup) return '';
     try {
-      const fragment = buildQuotationDocumentHtml(posReceiptToEmailPreviewProps(viewReceiptPopup), loadContactDetails(), {
+      const receiptPreviewProps = buildReceiptPrintDocPropsForPreview(viewReceiptPopup, customers, invoices);
+      const fragment = buildQuotationDocumentHtml(receiptPreviewProps, loadContactDetails(), {
         mode: 'email',
         companyName: 'Voltz Industrial Supply',
         previewLayout: 'compact',
@@ -951,7 +1182,25 @@ const CMSDashboardInner: React.FC = () => {
         '<div style="padding:24px;font-family:Inter,sans-serif;color:#b91c1c;font-size:14px">Preview could not be rendered.</div>'
       );
     }
-  }, [viewReceiptPopup]);
+  }, [viewReceiptPopup, invoices, customers]);
+
+  const viewRefundPopupHtml = useMemo(() => {
+    if (!viewRefundPopup) return '';
+    try {
+      const props = buildRefundPrintDocProps(viewRefundPopup, invoices);
+      const fragment = buildQuotationDocumentHtml(props, loadContactDetails(), {
+        mode: 'email',
+        companyName: 'Voltz Industrial Supply',
+        previewLayout: 'compact',
+      });
+      return buildQuotationPreviewSrcDoc(fragment);
+    } catch (e) {
+      console.error('viewRefundPopupHtml', e);
+      return buildQuotationPreviewSrcDoc(
+        '<div style="padding:24px;font-family:Inter,sans-serif;color:#b91c1c;font-size:14px">Preview could not be rendered.</div>'
+      );
+    }
+  }, [viewRefundPopup, invoices]);
 
   const [sentEmailPreview, setSentEmailPreview] = useState<POSSentEmail | null>(null);
   const sentEmailViewHtml = useMemo(() => {
@@ -984,9 +1233,17 @@ const CMSDashboardInner: React.FC = () => {
   // Refund modal
   const [refundInvoice, setRefundInvoice] = useState<POSInvoice | null>(null);
   const [refundReceiptId, setRefundReceiptId] = useState<string | null>(null);
+  /** When refund was opened from Receipts: every invoice linked to that receipt (for display + switching). */
+  const [refundReceiptLinkedInvoices, setRefundReceiptLinkedInvoices] = useState<POSInvoice[] | null>(null);
+  /** Receipt path only: line items to refund per invoice id (allows one or multiple invoices in one session). */
+  const [refundLinesByInvoiceId, setRefundLinesByInvoiceId] = useState<Record<string, POSLineItem[]> | null>(null);
+  const [refundSourceReceiptNumber, setRefundSourceReceiptNumber] = useState<string | null>(null);
   const [refundType, setRefundType] = useState<'cash' | 'store_credit' | 'exchange'>('cash');
   const [refundReason, setRefundReason] = useState('');
   const [refundItems, setRefundItems] = useState<POSLineItem[]>([]);
+  const [refundProcessing, setRefundProcessing] = useState(false);
+  /** Synchronous guard — blocks double-submit before React re-renders `refundProcessing`. */
+  const refundSubmitLockRef = useRef(false);
 
   // Checkout modal
   const [checkoutInvoice, setCheckoutInvoice] = useState<POSInvoice | null>(null);
@@ -1149,9 +1406,40 @@ const CMSDashboardInner: React.FC = () => {
       default:
         break;
     }
+    let blockedCheckoutNav = false;
+    if (next) {
+      if (next.sourceType === 'order') {
+        const o = orders.find((x) => x.id === next.sourceDocId);
+        if (!o) next = null;
+        else if (posOrderCheckoutBlocked(o, invoices, refunds)) {
+          notify({
+            variant: 'warning',
+            title: 'Checkout unavailable',
+            subtitle: 'This order is refunded or partially refunded, or its invoice cannot be checked out.',
+          });
+          next = null;
+          blockedCheckoutNav = true;
+        }
+      } else {
+        const doc =
+          next.sourceType === 'quote'
+            ? quotes.find((x) => x.id === next.sourceDocId)
+            : invoices.find((x) => x.id === next.sourceDocId);
+        if (!doc) next = null;
+        else if (checkoutDocumentExcludedDueToRefundedInvoice(doc, invoices, refunds)) {
+          notify({
+            variant: 'warning',
+            title: 'Checkout unavailable',
+            subtitle: 'This document is refunded or partially refunded.',
+          });
+          next = null;
+          blockedCheckoutNav = true;
+        }
+      }
+    }
     setCheckoutSource(next);
     if (next) await loadData();
-    setActivePage('pos-checkout');
+    if (!blockedCheckoutNav) setActivePage('pos-checkout');
     if (mobileSidebarOpen) closeMobileSidebar();
   }, [
     activePage,
@@ -1160,12 +1448,14 @@ const CMSDashboardInner: React.FC = () => {
     invoices,
     quoteRequests,
     receipts,
+    refunds,
     quotesSearch,
     ordersSearch,
     invoicesSearch,
     quoteRequestsSearch,
     loadData,
     mobileSidebarOpen,
+    notify,
   ]);
 
   /** Quotes/Orders: jump to Invoices list with search prefilled to open the linked invoice. */
@@ -1195,6 +1485,18 @@ const CMSDashboardInner: React.FC = () => {
   const goToInvoiceSearchByReceipt = (receiptNumber: string) => {
     setInvoicesSearch(receiptNumber.trim());
     navTo('pos-invoices');
+  };
+
+  /** Invoices: jump to Refunds with search prefilled to refund # (display form). */
+  const goToRefundSearch = (refundNumber: string) => {
+    setRefundsSearch(refundNumber.trim());
+    navTo('pos-refunds');
+  };
+
+  /** Receipts: jump to Refunds with search prefilled to receipt # (finds refunds tied to that receipt). */
+  const goToRefundsSearchByReceipt = (receiptNumber: string) => {
+    setRefundsSearch(receiptNumber.trim());
+    navTo('pos-refunds');
   };
 
   const openWebsiteRequestInQuoteEditor = useCallback(
@@ -1478,12 +1780,9 @@ const CMSDashboardInner: React.FC = () => {
               docType === 'receipt' ? String((doc as POSReceipt).payment_method || '').replace('_', ' ').toLowerCase() : '';
             const receiptInvoiceNumberText =
               docType === 'receipt'
-                ? (() => {
-                    const rec = doc as POSReceipt;
-                    if (!rec.invoice_id) return '';
-                    const invRow = invoices.find((i) => String(i.id) === String(rec.invoice_id));
-                    return invRow ? String(invRow.invoice_number || '').toLowerCase() : '';
-                  })()
+                ? invoiceNumbersAssociatedWithReceipt(doc as POSReceipt, invoices)
+                    .map((n) => n.toLowerCase())
+                    .join(' ')
                 : '';
             const invoiceLinkedReceiptNumbersText =
               docType === 'invoice'
@@ -1513,7 +1812,10 @@ const CMSDashboardInner: React.FC = () => {
             <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">{label}</h2>
+            <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+              <PosListPageTitleFa kind={posListPageKindFromDocType(docType)} />
+              {label}
+            </h2>
           </div>
           {canCreate && (
             <button onClick={() => {
@@ -1604,7 +1906,7 @@ const CMSDashboardInner: React.FC = () => {
               {docType === 'receipt' ? (
                 <>
                   <TableHead className="text-left min-w-[9rem]">Payment Method</TableHead>
-                  <TableHead className="text-right tabular-nums">Invoice Total</TableHead>
+                  <TableHead className="text-right tabular-nums">Invoice(s) Total</TableHead>
                   <TableHead className="text-right">Amount Received</TableHead>
                 </>
               ) : (
@@ -1661,6 +1963,7 @@ const CMSDashboardInner: React.FC = () => {
                       docType={docType}
                       invoiceList={invoices}
                       orderList={orders}
+                      refunds={refunds}
                       onOpenInvoice={goToInvoiceSearch}
                       onOpenOrder={goToOrderSearch}
                     />
@@ -1670,6 +1973,7 @@ const CMSDashboardInner: React.FC = () => {
                       receipts={receipts}
                       orders={orders}
                       invoices={invoices}
+                      refunds={refunds}
                       onOpenReceiptsByInvoice={goToReceiptsSearchByInvoice}
                       onOpenOrder={goToOrderSearch}
                     />
@@ -1677,7 +1981,9 @@ const CMSDashboardInner: React.FC = () => {
                     <ReceiptLinkedInvoiceStatusCell
                       rec={doc as POSReceipt}
                       invoices={invoices}
+                      refunds={refunds}
                       onOpenInvoiceByReceiptSearch={goToInvoiceSearchByReceipt}
+                      onOpenRefundsByReceiptSearch={goToRefundsSearchByReceipt}
                     />
                   ) : (
                     <StatusBadge status={doc.status || doc.delivery_status || ''} />
@@ -1705,24 +2011,38 @@ const CMSDashboardInner: React.FC = () => {
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="min-w-[11rem]">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setQuoteEditorReturnPage(listReturn);
-                              setPrefillData(null);
-                              setEditDoc(doc);
-                              setActivePage('pos-create-quote');
-                            }}
-                          >
-                            Review
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setViewQuotePopup(doc as POSQuote)}>
+                          {(() => {
+                            const inv = resolveInvoiceForQuoteOrOrder(doc as POSQuote, 'quote', invoices);
+                            if (inv && invoiceIsFullyPaid(inv)) return null;
+                            return (
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onClick={() => {
+                                  setQuoteEditorReturnPage(listReturn);
+                                  setPrefillData(null);
+                                  setEditDoc(doc);
+                                  setActivePage('pos-create-quote');
+                                }}
+                              >
+                                <PosActionsFa icon={POS_MENU_FA.review} />
+                                Review
+                              </DropdownMenuItem>
+                            );
+                          })()}
+                          <DropdownMenuItem className="gap-2" onClick={() => setViewQuotePopup(doc as POSQuote)}>
+                            <PosActionsFa icon={POS_MENU_FA.view} />
                             View Quote
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => printDocument({ type: 'quote', docNumber: doc.quote_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status })}>
+                          <DropdownMenuItem
+                            className="gap-2"
+                            onClick={() => printDocument({ type: 'quote', docNumber: doc.quote_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status })}
+                          >
+                            <PosActionsFa icon={POS_MENU_FA.print} />
                             Print Quote
                           </DropdownMenuItem>
                           {(doc as POSQuote).status !== 'dormant' ? (
                             <DropdownMenuItem
+                              className="gap-2"
                               onClick={async () => {
                                 const q = doc as POSQuote;
                                 try {
@@ -1741,10 +2061,12 @@ const CMSDashboardInner: React.FC = () => {
                                 }
                               }}
                             >
+                              <PosActionsFa icon={POS_MENU_FA.setDormant} />
                               Set Dormant
                             </DropdownMenuItem>
                           ) : (
                             <DropdownMenuItem
+                              className="gap-2"
                               onClick={async () => {
                                 const q = doc as POSQuote;
                                 try {
@@ -1763,11 +2085,13 @@ const CMSDashboardInner: React.FC = () => {
                                 }
                               }}
                             >
+                              <PosActionsFa icon={POS_MENU_FA.restoreDormant} />
                               Restore from Dormant
                             </DropdownMenuItem>
                           )}
                           {!(doc as POSQuote).order_id && !(doc as POSQuote).invoice_id && (
                             <DropdownMenuItem
+                              className="gap-2"
                               onClick={async () => {
                                 const o = await createOrderFromQuote(doc as POSQuote);
                                 if (o) {
@@ -1778,11 +2102,13 @@ const CMSDashboardInner: React.FC = () => {
                                 }
                               }}
                             >
+                              <PosActionsFa icon={POS_MENU_FA.generateOrder} />
                               Generate Order
                             </DropdownMenuItem>
                           )}
                           {!(doc as POSQuote).invoice_id && (
                             <DropdownMenuItem
+                              className="gap-2"
                               onClick={async () => {
                                 const inv = await createInvoiceFromQuote(doc as POSQuote);
                                 if (inv) {
@@ -1793,6 +2119,7 @@ const CMSDashboardInner: React.FC = () => {
                                 }
                               }}
                             >
+                              <PosActionsFa icon={POS_MENU_FA.generateInvoice} />
                               Generate Invoice
                             </DropdownMenuItem>
                           )}
@@ -1801,14 +2128,18 @@ const CMSDashboardInner: React.FC = () => {
                             const invRow = q.invoice_id ? invoices.find((i) => i.id === q.invoice_id) : undefined;
                             const can =
                               !q.invoice_id ||
-                              (invRow && invoiceIsOpenBalance(invRow));
+                              (invRow &&
+                                invoiceIsOpenBalance(invRow) &&
+                                !invoiceExcludedFromCheckoutDocumentSearch(invRow, refunds));
                             if (!can) return null;
                             return (
                               <DropdownMenuItem
+                                className="gap-2"
                                 onClick={async () => {
                                   await goCheckoutFromList({ sourceType: 'quote', sourceDocId: q.id });
                                 }}
                               >
+                                <PosActionsFa icon={POS_MENU_FA.checkout} />
                                 Checkout
                               </DropdownMenuItem>
                             );
@@ -1829,24 +2160,42 @@ const CMSDashboardInner: React.FC = () => {
                         <DropdownMenuContent align="end" className="min-w-[11rem]">
                           {docType === 'order' && (
                             <>
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  setOrderEditorReturnPage(orderInvReturn);
-                                  setEditDoc(doc);
-                                  setPrefillData(null);
-                                  setActivePage('pos-create-order');
-                                }}
-                              >
-                                Review
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setViewOrderPopup(doc as POSOrder)}>
+                              {(() => {
+                                const o = doc as POSOrder;
+                                // Match Orders status badge: Paid/Partially Paid + refunds can show “Partially Refunded”
+                                // while `pos_orders.status` stays `invoice_generated_*` — still hide Review.
+                                if (posOrderCheckoutBlocked(o, invoices, refunds)) return null;
+                                const inv = resolveInvoiceForQuoteOrOrder(o, 'order', invoices);
+                                if (inv && invoiceIsFullyPaid(inv)) return null;
+                                return (
+                                  <DropdownMenuItem
+                                    className="gap-2"
+                                    onClick={() => {
+                                      setOrderEditorReturnPage(orderInvReturn);
+                                      setEditDoc(doc);
+                                      setPrefillData(null);
+                                      setActivePage('pos-create-order');
+                                    }}
+                                  >
+                                    <PosActionsFa icon={POS_MENU_FA.review} />
+                                    Review
+                                  </DropdownMenuItem>
+                                );
+                              })()}
+                              <DropdownMenuItem className="gap-2" onClick={() => setViewOrderPopup(doc as POSOrder)}>
+                                <PosActionsFa icon={POS_MENU_FA.view} />
                                 View Order
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => printDocument({ type: 'order', docNumber: doc.order_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status })}>
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onClick={() => printDocument({ type: 'order', docNumber: doc.order_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status })}
+                              >
+                                <PosActionsFa icon={POS_MENU_FA.print} />
                                 Print Order
                               </DropdownMenuItem>
                               {doc.status !== 'completed' && doc.status !== 'cancelled' && !doc.invoice_id && (
                                 <DropdownMenuItem
+                                  className="gap-2"
                                   onClick={async () => {
                                     const inv = await convertOrderToInvoice(doc as POSOrder);
                                     if (inv) {
@@ -1857,22 +2206,28 @@ const CMSDashboardInner: React.FC = () => {
                                     }
                                   }}
                                 >
+                                  <PosActionsFa icon={POS_MENU_FA.generateInvoice} />
                                   Generate Invoice
                                 </DropdownMenuItem>
                               )}
                               {(() => {
                                 const o = doc as POSOrder;
+                                if (posOrderCheckoutBlocked(o, invoices, refunds)) return null;
                                 const invRow = o.invoice_id ? invoices.find((i) => i.id === o.invoice_id) : undefined;
                                 const can =
                                   !o.invoice_id ||
-                                  (invRow && invoiceIsOpenBalance(invRow));
+                                  (invRow &&
+                                    invoiceIsOpenBalance(invRow) &&
+                                    !invoiceExcludedFromCheckoutDocumentSearch(invRow, refunds));
                                 if (!can) return null;
                                 return (
                                   <DropdownMenuItem
+                                    className="gap-2"
                                     onClick={async () => {
                                       await goCheckoutFromList({ sourceType: 'order', sourceDocId: o.id });
                                     }}
                                   >
+                                    <PosActionsFa icon={POS_MENU_FA.checkout} />
                                     Checkout
                                   </DropdownMenuItem>
                                 );
@@ -1881,42 +2236,61 @@ const CMSDashboardInner: React.FC = () => {
                           )}
                           {docType === 'invoice' && (
                             <>
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  setInvoiceEditorReturnPage(orderInvReturn);
-                                  setEditDoc(doc);
-                                  setPrefillData(null);
-                                  setActivePage('pos-create-invoice');
-                                }}
-                              >
-                                Review
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setViewInvoicePopup(doc as POSInvoice)}>
+                              {!invoiceIsFullyPaid(doc as POSInvoice) &&
+                                normalizeInvoiceStatus((doc as POSInvoice).status) !== INVOICE_STATUS_REFUNDED &&
+                                !invoiceListShowsPartiallyRefunded(doc as POSInvoice, refunds) && (
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  onClick={() => {
+                                    setInvoiceEditorReturnPage(orderInvReturn);
+                                    setEditDoc(doc);
+                                    setPrefillData(null);
+                                    setActivePage('pos-create-invoice');
+                                  }}
+                                >
+                                  <PosActionsFa icon={POS_MENU_FA.review} />
+                                  Review
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem className="gap-2" onClick={() => setViewInvoicePopup(doc as POSInvoice)}>
+                                <PosActionsFa icon={POS_MENU_FA.view} />
                                 View Invoice
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => printDocument({ type: 'invoice', docNumber: doc.invoice_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method })}>
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onClick={() => printDocument({ type: 'invoice', docNumber: doc.invoice_number, date: doc.created_at, customerName: doc.customer_name, customerEmail: doc.customer_email, customerPhone: doc.customer_phone, items: doc.items || [], subtotal: doc.subtotal || 0, taxRate: doc.tax_rate, taxAmount: doc.tax_amount, discountAmount: doc.discount_amount, total: doc.total || 0, notes: doc.notes, status: doc.status, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method })}
+                              >
+                                <PosActionsFa icon={POS_MENU_FA.print} />
                                 Print Invoice
                               </DropdownMenuItem>
-                              {invoiceIsOpenBalance(doc as POSInvoice) && (
+                              {invoiceIsOpenBalance(doc as POSInvoice) &&
+                                !invoiceExcludedFromCheckoutDocumentSearch(doc as POSInvoice, refunds) && (
                                 <DropdownMenuItem
+                                  className="gap-2"
                                   onClick={async () => {
                                     await goCheckoutFromList({ sourceType: 'invoice', sourceDocId: (doc as POSInvoice).id });
                                   }}
                                 >
+                                  <PosActionsFa icon={POS_MENU_FA.checkout} />
                                   Checkout
                                 </DropdownMenuItem>
                               )}
                               {invoiceCanProcessRefund(doc as POSInvoice) && (
                                 <DropdownMenuItem
+                                  className="gap-2"
                                   onClick={() => {
                                     const inv = doc as POSInvoice;
                                     setRefundInvoice(inv);
                                     setRefundReceiptId(latestReceiptIdForInvoice(receipts, inv.id) ?? null);
-                                    setRefundItems(inv.items.map((i: POSLineItem) => ({ ...i })));
+                                    setRefundReceiptLinkedInvoices(null);
+                                    setRefundLinesByInvoiceId(null);
+                                    setRefundSourceReceiptNumber(null);
+                                    setRefundItems(invoiceLineItemsRemainingForRefund(inv, refunds));
                                     setRefundType('cash');
                                     setRefundReason('');
                                   }}
                                 >
+                                  <PosActionsFa icon={POS_MENU_FA.refund} />
                                   Refund
                                 </DropdownMenuItem>
                               )}
@@ -1924,31 +2298,56 @@ const CMSDashboardInner: React.FC = () => {
                           )}
                           {docType === 'receipt' && (
                             <>
-                              <DropdownMenuItem onClick={() => setViewReceiptPopup(doc as POSReceipt)}>
+                              <DropdownMenuItem className="gap-2" onClick={() => setViewReceiptPopup(doc as POSReceipt)}>
+                                <PosActionsFa icon={POS_MENU_FA.viewReceipt} />
                                 View Receipt
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}>
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}
+                              >
+                                <PosActionsFa icon={POS_MENU_FA.print} />
                                 Print POS Receipt
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}>
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onClick={() => printDocument({ type: 'receipt', docNumber: doc.receipt_number, date: doc.created_at, customerName: doc.customer_name, items: doc.items || [], subtotal: doc.total || 0, total: doc.total || 0, amountPaid: doc.amount_paid, paymentMethod: doc.payment_method, notes: doc.notes, status: doc.status })}
+                              >
+                                <PosActionsFa icon={POS_MENU_FA.print} />
                                 Print Receipt
                               </DropdownMenuItem>
                               {(() => {
                                 const rec = doc as POSReceipt;
-                                const inv = rec.invoice_id
-                                  ? invoices.find((i) => String(i.id) === String(rec.invoice_id))
-                                  : undefined;
-                                if (!inv || !invoiceCanProcessRefund(inv)) return null;
+                                const linked = invoicesAssociatedWithReceipt(rec, invoices);
+                                if (!linked.some((inv) => invoiceCanProcessRefund(inv))) return null;
+                                const firstRefundable =
+                                  linked.find((inv) => invoiceCanProcessRefund(inv)) ?? linked[0];
                                 return (
                                   <DropdownMenuItem
+                                    className="gap-2"
                                     onClick={() => {
-                                      setRefundInvoice(inv);
+                                      setRefundInvoice(firstRefundable);
                                       setRefundReceiptId(rec.id);
-                                      setRefundItems(inv.items.map((i: POSLineItem) => ({ ...i })));
+                                      setRefundReceiptLinkedInvoices(linked);
+                                      setRefundLinesByInvoiceId(
+                                        Object.fromEntries(
+                                          linked.map((inv) => [
+                                            String(inv.id),
+                                            invoiceLineItemsRemainingForRefund(inv, refunds),
+                                          ])
+                                        )
+                                      );
+                                      setRefundSourceReceiptNumber(
+                                        String((rec as POSReceipt).receipt_number || '').trim() || null
+                                      );
+                                      setRefundItems(
+                                        invoiceLineItemsRemainingForRefund(firstRefundable, refunds)
+                                      );
                                       setRefundType('cash');
                                       setRefundReason('');
                                     }}
                                   >
+                                    <PosActionsFa icon={POS_MENU_FA.refund} />
                                     Refund
                                   </DropdownMenuItem>
                                 );
@@ -2000,7 +2399,10 @@ const CMSDashboardInner: React.FC = () => {
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Website Quote Requests</h2>
+        <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+          <PosListPageTitleFa kind="quote-requests" />
+          Website Quote Requests
+        </h2>
       </div>
       )}
       {!embed && (
@@ -2195,21 +2597,36 @@ const CMSDashboardInner: React.FC = () => {
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="min-w-[10rem]">
-                      <DropdownMenuItem onClick={() => openWebsiteRequestInQuoteEditor(qr, qrReturn)}>
-                        {(qr.status || '').toLowerCase() === 'new' ? 'Create Quote' : 'Review'}
-                      </DropdownMenuItem>
+                      {(() => {
+                        const linkedQr = findQuoteForWebsiteRequest(qr, quotes);
+                        const inv = linkedQr
+                          ? resolveInvoiceForQuoteOrOrder(linkedQr, 'quote', invoices)
+                          : undefined;
+                        const paidOff = inv && invoiceIsFullyPaid(inv);
+                        const isNewQr = (qr.status || '').toLowerCase() === 'new';
+                        if (paidOff && !isNewQr) return null;
+                        return (
+                          <DropdownMenuItem className="gap-2" onClick={() => openWebsiteRequestInQuoteEditor(qr, qrReturn)}>
+                            <PosActionsFa icon={POS_MENU_FA.createOrGenerateQuote} />
+                            {isNewQr ? 'Create Quote' : 'Review'}
+                          </DropdownMenuItem>
+                        );
+                      })()}
                       {!findQuoteForWebsiteRequest(qr, quotes) && qr.status !== 'new' ? (
-                        <DropdownMenuItem onClick={() => openWebsiteRequestInQuoteEditor(qr, qrReturn)}>
+                        <DropdownMenuItem className="gap-2" onClick={() => openWebsiteRequestInQuoteEditor(qr, qrReturn)}>
+                          <PosActionsFa icon={POS_MENU_FA.createOrGenerateQuote} />
                           Generate Quote
                         </DropdownMenuItem>
                       ) : null}
                       {findQuoteForWebsiteRequest(qr, quotes) ? (
                         <DropdownMenuItem
+                          className="gap-2"
                           onClick={() => {
                             const qdoc = findQuoteForWebsiteRequest(qr, quotes);
                             if (qdoc) setViewQuotePopup(qdoc);
                           }}
                         >
+                          <PosActionsFa icon={POS_MENU_FA.view} />
                           View Quote
                         </DropdownMenuItem>
                       ) : null}
@@ -2224,11 +2641,14 @@ const CMSDashboardInner: React.FC = () => {
                         const showCheckout =
                           linked &&
                           (!linked.invoice_id ||
-                            (linkedInv && invoiceIsOpenBalance(linkedInv)));
+                            (linkedInv &&
+                              invoiceIsOpenBalance(linkedInv) &&
+                              !invoiceExcludedFromCheckoutDocumentSearch(linkedInv, refunds)));
                         return (
                           <>
                             {showCreateOrder ? (
                               <DropdownMenuItem
+                                className="gap-2"
                                 onClick={async () => {
                                   const o = await createOrderFromWebsiteQuoteRequest(qr, linked);
                                   if (o) {
@@ -2247,11 +2667,13 @@ const CMSDashboardInner: React.FC = () => {
                                   }
                                 }}
                               >
+                                <PosActionsFa icon={POS_MENU_FA.generateOrder} />
                                 Generate Order
                               </DropdownMenuItem>
                             ) : null}
                             {showCreateInvoice ? (
                               <DropdownMenuItem
+                                className="gap-2"
                                 onClick={async () => {
                                   const inv = await createInvoiceFromWebsiteQuoteRequest(qr, linked);
                                   if (inv) {
@@ -2270,17 +2692,20 @@ const CMSDashboardInner: React.FC = () => {
                                   }
                                 }}
                               >
+                                <PosActionsFa icon={POS_MENU_FA.generateInvoice} />
                                 Generate Invoice
                               </DropdownMenuItem>
                             ) : null}
                             {showCheckout ? (
                               <DropdownMenuItem
+                                className="gap-2"
                                 onClick={async () => {
                                   const l = findQuoteForWebsiteRequest(qr, quotes);
                                   if (!l) return;
                                   await goCheckoutFromList({ sourceType: 'quote', sourceDocId: l.id });
                                 }}
                               >
+                                <PosActionsFa icon={POS_MENU_FA.checkout} />
                                 Checkout
                               </DropdownMenuItem>
                             ) : null}
@@ -2326,7 +2751,10 @@ const CMSDashboardInner: React.FC = () => {
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customer history</h2>
+            <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+              <PosListPageTitleFa kind="customer-history" />
+              Customer history
+            </h2>
           </div>
           <p className="text-sm text-gray-500">Open a customer from Customers and choose View History.</p>
         </div>
@@ -2362,7 +2790,10 @@ const CMSDashboardInner: React.FC = () => {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customer history</h2>
+          <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+            <PosListPageTitleFa kind="customer-history" />
+            Customer history
+          </h2>
         </div>
 
         <div className={`${POS_SURFACE_RAISED} p-5 mb-6`}>
@@ -2463,7 +2894,10 @@ const CMSDashboardInner: React.FC = () => {
           <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Customers</h2>
+          <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+            <PosListPageTitleFa kind="customers" />
+            Customers
+          </h2>
         </div>
         <button onClick={() => { setCustForm({ name: '', email: '', phone: '', company: '', address: '', notes: '' }); setShowCustForm(true); setSelectedCustomer(null); setCustomerHistory(null); }}
           className="flex items-center gap-2 px-4 py-2 bg-[#e31e24] text-white rounded-lg text-sm font-semibold hover:bg-[#c91a1f]"><Plus className="w-4 h-4" /> New Customer</button>
@@ -2471,10 +2905,27 @@ const CMSDashboardInner: React.FC = () => {
 
       {showCustForm && (
         <div className={`${POS_SURFACE_RAISED} p-5 mb-6`}>
-          <h3 className="font-bold text-[#1a2332] mb-4">{selectedCustomer ? 'Edit' : 'New'} Customer</h3>
+          <h3 className="flex items-center gap-2.5 font-bold text-[#1a2332] mb-4">
+            <PosCustomerFormTitleFa edit={!!selectedCustomer} />
+            {selectedCustomer ? 'Edit' : 'New'} Customer
+          </h3>
           <div className="grid sm:grid-cols-2 gap-4 mb-4">
             <input value={custForm.name} onChange={e => setCustForm({ ...custForm, name: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Name *" />
-            <input value={custForm.phone} onChange={e => setCustForm({ ...custForm, phone: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Phone" />
+            <input
+              type="tel"
+              inputMode="numeric"
+              autoComplete="tel-national"
+              maxLength={14}
+              value={custForm.phone}
+              onChange={(e) =>
+                setCustForm({
+                  ...custForm,
+                  phone: formatPhoneUsMask(digitsFromPhoneInput(e.target.value)),
+                })
+              }
+              className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors font-mono tracking-tight"
+              placeholder="(876) 123-4567"
+            />
             <input value={custForm.email} onChange={e => setCustForm({ ...custForm, email: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Email" />
             <input value={custForm.company} onChange={e => setCustForm({ ...custForm, company: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors" placeholder="Company" />
             <input value={custForm.address} onChange={e => setCustForm({ ...custForm, address: e.target.value })} className="px-3 py-2 border border-gray-200/90 rounded-xl text-sm bg-gray-50/70 focus:bg-white transition-colors col-span-2" placeholder="Address" />
@@ -2536,12 +2987,12 @@ const CMSDashboardInner: React.FC = () => {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="min-w-[11rem]">
                       <DropdownMenuItem
-                        className="cursor-pointer"
+                        className="cursor-pointer gap-2"
                         onClick={() => {
                           setCustForm({
                             name: c.name,
                             email: c.email,
-                            phone: c.phone,
+                            phone: formatPhoneUsMask(digitsFromPhoneInput(c.phone)),
                             company: c.company,
                             address: c.address,
                             notes: c.notes,
@@ -2551,10 +3002,11 @@ const CMSDashboardInner: React.FC = () => {
                           setCustomerHistory(null);
                         }}
                       >
+                        <PosActionsFa icon={POS_MENU_FA.editCustomer} />
                         Edit
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        className="cursor-pointer"
+                        className="cursor-pointer gap-2"
                         onClick={async () => {
                           setSelectedCustomer(c);
                           const ids = mergedPlaceholderIdsByCanonicalId.get(c.id) ?? [c.id];
@@ -2567,12 +3019,14 @@ const CMSDashboardInner: React.FC = () => {
                           navTo('pos-customer-history');
                         }}
                       >
+                        <PosActionsFa icon={POS_MENU_FA.viewHistory} />
                         View History
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        className="cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50"
+                        className="cursor-pointer gap-2 text-red-600 focus:text-red-600 focus:bg-red-50"
                         onClick={() => setCustomerPendingDelete(c)}
                       >
+                        <PosActionsFa icon={POS_MENU_FA.deleteCustomer} className="!text-red-600" />
                         Delete
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -2668,6 +3122,31 @@ const CMSDashboardInner: React.FC = () => {
   // ─── Refunds ───
   const renderRefunds = (embed?: { rows: POSRefund[] }) => {
     const rows = embed?.rows ?? refunds;
+    const q = embed ? '' : refundsSearch.trim().toLowerCase();
+    const filtered =
+      !q || embed
+        ? rows
+        : rows.filter((r) => {
+            const num = String(r.refund_number || '').toLowerCase();
+            const disp = displayRefundDocNumber(r.refund_number).toLowerCase();
+            const cust = String(r.customer_name || '').toLowerCase();
+            const st = String(r.status || '').toLowerCase();
+            const typ = String(r.refund_type || '').toLowerCase();
+            const matchesReceipt =
+              receipts.some((rec) => {
+                const rn = (rec.receipt_number || '').toLowerCase();
+                if (!rn.includes(q)) return false;
+                return refundTouchesReceiptRow(r, rec);
+              });
+            return (
+              num.includes(q) ||
+              disp.includes(q) ||
+              cust.includes(q) ||
+              st.includes(q) ||
+              typ.includes(q) ||
+              matchesReceipt
+            );
+          });
     return (
     <div className={POS_PAGE_SHELL}>
       {!embed && (
@@ -2676,11 +3155,38 @@ const CMSDashboardInner: React.FC = () => {
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Refunds</h2>
+        <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+          <PosListPageTitleFa kind="refunds" />
+          Refunds
+        </h2>
       </div>
       <p className="text-sm text-gray-500 mb-4">
         To record a refund, open a paid invoice from Invoices and choose Refund, or open the matching receipt from Receipts and choose Refund. Partial refunds reduce the invoice&apos;s amount paid; you can refund again until the balance is cleared, then the invoice is marked Refunded.
       </p>
+      <div className={POS_SEARCH_CARD}>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-0 sm:max-w-xl">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              value={refundsSearch}
+              onChange={(e) => setRefundsSearch(e.target.value)}
+              className={POS_QUICK_SEARCH_INPUT}
+              placeholder="Search by refund #, receipt #, customer, type, or status"
+              aria-label="Search refunds"
+            />
+          </div>
+          {refundsSearch.trim() ? (
+            <button
+              type="button"
+              onClick={() => setRefundsSearch('')}
+              className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
       </>
       )}
       <Table variant="pos" compactRecords resizable={{ storageKey: 'pos-refunds', columnCount: 7 }}>
@@ -2692,33 +3198,99 @@ const CMSDashboardInner: React.FC = () => {
             <TableHead className="text-right">Amount</TableHead>
             <TableHead>Date</TableHead>
             <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2" aria-hidden />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map(r => (
+          {filtered.map(r => (
             <TableRow key={r.id}>
-              <TableCell className="font-semibold text-[#1a2332]">{r.refund_number}</TableCell>
+              <TableCell className="font-semibold text-[#1a2332]">{displayRefundDocNumber(r.refund_number)}</TableCell>
               <TableCell>{r.customer_name || '-'}</TableCell>
               <TableCell className="capitalize">{r.refund_type.replace('_', ' ')}</TableCell>
               <TableCell className="text-right font-bold text-red-600 tabular-nums">{fmtMoney(r.total)}</TableCell>
               <TableCell className="text-gray-500">{fmtDate(r.created_at)}</TableCell>
               <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
-              <TableCell className="text-right">
-                <button onClick={() => printDocument({ type: 'refund', docNumber: r.refund_number, date: r.created_at, customerName: r.customer_name, items: r.items, subtotal: r.subtotal, taxAmount: r.tax_amount, total: r.total, refundType: r.refund_type, reason: r.reason, notes: r.notes })}
-                  className="p-1.5 rounded-lg hover:bg-slate-100 text-gray-400 hover:text-[#1a2332]"><Printer className="w-4 h-4" /></button>
+              <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle">
+                <div className="flex items-center justify-end gap-1">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                      >
+                        Actions
+                        <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[11rem]">
+                      <DropdownMenuItem className="gap-2" onClick={() => setViewRefundPopup(r)}>
+                        <PosActionsFa icon={POS_MENU_FA.view} />
+                        View Refund
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="gap-2"
+                        onClick={() => printDocument(buildRefundPrintDocProps(r, invoices))}
+                      >
+                        <PosActionsFa icon={POS_MENU_FA.print} />
+                        Print Refund
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </TableCell>
             </TableRow>
           ))}
-          {rows.length === 0 && (
+          {filtered.length === 0 && (
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={7} className="h-32 text-center text-gray-400">
-                {embed ? 'No refunds for this customer' : 'No refunds yet'}
+                {rows.length === 0
+                  ? embed
+                    ? 'No refunds for this customer'
+                    : 'No refunds yet'
+                  : 'No matches — try a different search'}
               </TableCell>
             </TableRow>
           )}
         </TableBody>
       </Table>
+      <Dialog open={viewRefundPopup != null} onOpenChange={(open) => { if (!open) setViewRefundPopup(null); }}>
+        <DialogContent
+          hideClose
+          overlayClassName="bg-black/60 backdrop-blur-[2px]"
+          className="max-w-[900px] w-[min(96vw,900px)] max-h-[92vh] gap-0 overflow-hidden p-0 flex flex-col border border-gray-200 shadow-2xl sm:max-w-[900px] rounded-xl bg-white"
+        >
+          {viewRefundPopup && (
+            <>
+              <DialogHeader className="relative flex shrink-0 flex-row items-start justify-between gap-3 space-y-0 border-b border-gray-200 bg-white px-4 py-3 text-left sm:text-left">
+                <div className="min-w-0 flex-1 space-y-1 pr-2">
+                  <DialogTitle className="text-lg font-bold tracking-tight text-[#1a2332]">
+                    Refund {displayRefundDocNumber(viewRefundPopup.refund_number)}
+                  </DialogTitle>
+                  <p className="text-xs text-gray-600">
+                    {fmtDatePOS(viewRefundPopup.created_at)}
+                    {viewRefundPopup.status ? ` · ${viewRefundPopup.status}` : ''}
+                    {viewRefundPopup.refund_type ? ` · ${viewRefundPopup.refund_type.replace('_', ' ')}` : ''}
+                  </p>
+                </div>
+                <DialogClose
+                  type="button"
+                  className="shrink-0 rounded-full p-2 text-[#1a2332] transition-colors hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300 focus:ring-offset-0"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </DialogClose>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 overflow-hidden bg-white p-3 sm:p-4">
+                <iframe
+                  title={`Refund ${displayRefundDocNumber(viewRefundPopup.refund_number)}`}
+                  className="h-[min(80vh,760px)] w-full min-h-[440px] rounded-md border border-gray-200 bg-white shadow-sm"
+                  srcDoc={viewRefundPopupHtml}
+                />
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
   };
@@ -2733,7 +3305,10 @@ const CMSDashboardInner: React.FC = () => {
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Sent Emails</h2>
+        <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+          <PosListPageTitleFa kind="sent-emails" />
+          Sent Emails
+        </h2>
       </div>
       )}
       <Dialog open={sentEmailPreview != null} onOpenChange={(open) => { if (!open) setSentEmailPreview(null); }}>
@@ -2850,8 +3425,9 @@ const CMSDashboardInner: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSentEmailPreview(e)}
-                  className="inline-flex items-center justify-center px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold shadow-sm hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold shadow-sm hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
                 >
+                  <PosActionsFa icon={POS_MENU_FA.view} className="!text-white" />
                   View
                 </button>
               </TableCell>
@@ -2989,7 +3565,10 @@ const CMSDashboardInner: React.FC = () => {
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Email Configuration</h2>
+        <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+          <PosListPageTitleFa kind="email-settings" />
+          Email Configuration
+        </h2>
       </div>
 
       {/* Important notice about how email sending works */}
@@ -3146,7 +3725,10 @@ const CMSDashboardInner: React.FC = () => {
         <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-2xl font-bold tracking-tight text-[#1a2332]">Billing / Invoicing</h2>
+        <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
+          <PosListPageTitleFa kind="billing" />
+          Billing / Invoicing
+        </h2>
       </div>
       <div className={`${POS_SURFACE_RAISED} p-6 max-w-xl`}>
         <label className="block text-sm font-semibold text-[#1a2332] mb-1">Default GCT (%)</label>
@@ -3266,9 +3848,20 @@ const CMSDashboardInner: React.FC = () => {
         );
       case 'pos-checkout': return (
         <POSCheckout
-          key={checkoutSource ? `${checkoutSource.sourceType}-${checkoutSource.sourceDocId}` : 'standalone'}
+          key={
+            checkoutExchangeHandoff
+              ? `ex-${checkoutExchangeNavKey}`
+              : checkoutSource
+                ? `${checkoutSource.sourceType}-${checkoutSource.sourceDocId}`
+                : 'standalone'
+          }
           source={checkoutSource}
-          onBack={goBackPage}
+          exchangeHandoff={checkoutExchangeHandoff}
+          onExchangeHandoffConsumed={() => setCheckoutExchangeHandoff(null)}
+          onBack={() => {
+            setCheckoutExchangeHandoff(null);
+            goBackPage();
+          }}
           onCustomersRefresh={refreshCustomers}
           onAfterSuccessfulCheckout={async () => {
             try {
@@ -3280,6 +3873,7 @@ const CMSDashboardInner: React.FC = () => {
           }}
           onDone={() => {
             setCheckoutSource(null);
+            setCheckoutExchangeHandoff(null);
             loadData();
             const target = checkoutReturnPage ?? 'pos-dashboard';
             setCheckoutReturnPage(null);
@@ -3480,85 +4074,332 @@ const CMSDashboardInner: React.FC = () => {
           <div
             className="absolute inset-0 bg-black/60"
             onClick={() => {
+              if (refundProcessing) return;
               setRefundInvoice(null);
               setRefundReceiptId(null);
+              setRefundReceiptLinkedInvoices(null);
+              setRefundLinesByInvoiceId(null);
+              setRefundSourceReceiptNumber(null);
+              setRefundProcessing(false);
+              refundSubmitLockRef.current = false;
             }}
           />
-          <div className="relative bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-bold text-[#1a2332] mb-4">Process Refund - {refundInvoice.invoice_number}</h3>
+          <div
+            className="relative bg-white rounded-2xl w-full max-w-xl min-w-0 p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+          >
+            <h3 className="text-lg font-bold text-[#1a2332] mb-1">
+              {refundSourceReceiptNumber
+                ? `Process refund — Receipt ${refundSourceReceiptNumber}`
+                : `Process Refund — ${refundInvoice.invoice_number}`}
+            </h3>
+            {refundSourceReceiptNumber && refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 1 && (
+              <p className="text-sm text-gray-600 mb-4">
+                Set quantities on one invoice, several, or all. A single refund record (one RF number) is created
+                for the combined return; each invoice balance is updated accordingly.
+              </p>
+            )}
             <div className="mb-4">
               <label className="block text-sm font-semibold mb-2">Refund Type</label>
               <div className="grid grid-cols-3 gap-2">
-                {(['cash', 'store_credit', 'exchange'] as const).map(t => (
-                  <button key={t} onClick={() => setRefundType(t)}
-                    className={`py-2 px-3 rounded-lg text-sm font-semibold border capitalize ${refundType === t ? 'bg-[#e31e24] text-white border-[#e31e24]' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                {(['cash', 'store_credit', 'exchange'] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setRefundType(t)}
+                    className={`py-2 px-3 rounded-lg text-sm font-semibold border capitalize ${refundType === t ? 'bg-[#e31e24] text-white border-[#e31e24]' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                  >
                     {t.replace('_', ' ')}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="mb-4">
-              <label className="block text-sm font-semibold mb-2">Items to Refund</label>
-              {refundItems.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between py-2 border-b border-gray-100">
-                  <span className="text-sm">{item.product_name}</span>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      placeholder="0"
-                      value={item.quantity === 0 ? '' : String(item.quantity)}
-                      onChange={e => {
-                        const r = e.target.value.replace(/[^\d]/g, '');
-                        const q = r === '' ? 0 : parseInt(r, 10) || 0;
-                        const cap = refundInvoice.items[idx]?.quantity || 1;
-                        const clamped = Math.min(cap, q);
-                        setRefundItems(refundItems.map((ri, i) => i === idx ? { ...ri, quantity: clamped, total: clamped * ri.unit_price } : ri));
-                      }}
-                      className={`w-16 text-center border border-gray-200 rounded-md py-1 text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
-                    />
-                    <span className="text-sm font-semibold">{fmtMoney(item.quantity * item.unit_price)}</span>
+            {refundLinesByInvoiceId && refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 0 ? (
+              <div className="mb-4 space-y-5">
+                {refundReceiptLinkedInvoices.map((inv) => {
+                  const invId = String(inv.id);
+                  const canRefund = invoiceCanProcessRefund(inv);
+                  const lines =
+                    refundLinesByInvoiceId[invId] ?? invoiceLineItemsRemainingForRefund(inv, refunds);
+                  return (
+                    <div
+                      key={invId}
+                      className={`rounded-lg border p-3 min-w-0 ${canRefund ? 'border-gray-200 bg-white' : 'border-gray-100 bg-gray-50 opacity-75'}`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2 mb-2 min-w-0">
+                        <span className="font-semibold text-[#1a2332] shrink-0">{inv.invoice_number}</span>
+                        <div className="flex flex-col items-end gap-0.5 text-right shrink-0 min-w-0">
+                          <span className="text-xs font-medium text-gray-700 tabular-nums">
+                            Invoice total: {fmtMoney(Number(inv.total) || 0)}
+                          </span>
+                          {!canRefund && (
+                            <span className="text-xs text-gray-500">Nothing left to refund</span>
+                          )}
+                        </div>
+                      </div>
+                      {canRefund && (
+                        <>
+                          <p className="text-xs font-semibold text-gray-500 mb-2">Items to refund</p>
+                          {lines.map((item, idx) => (
+                            <div
+                              key={`${invId}-${idx}`}
+                              className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0 min-w-0"
+                            >
+                              <span className="text-sm min-w-0 flex-1 break-words">{item.product_name}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  autoComplete="off"
+                                  placeholder="0"
+                                  value={item.quantity === 0 ? '' : String(item.quantity)}
+                                  onChange={(e) => {
+                                    const r = e.target.value.replace(/[^\d]/g, '');
+                                    const q = r === '' ? 0 : parseInt(r, 10) || 0;
+                                    const cap =
+                                      invoiceLineItemsRemainingForRefund(inv, refunds)[idx]?.quantity ?? 0;
+                                    const clamped = Math.min(Math.max(0, cap), q);
+                                    setRefundLinesByInvoiceId((prev) => {
+                                      if (!prev) return prev;
+                                      const cur = prev[invId];
+                                      if (!cur) return prev;
+                                      const next = cur.map((ri, i) =>
+                                        i === idx
+                                          ? { ...ri, quantity: clamped, total: clamped * ri.unit_price }
+                                          : ri
+                                      );
+                                      return { ...prev, [invId]: next };
+                                    });
+                                  }}
+                                  className={`w-16 shrink-0 text-center border border-gray-200 rounded-md py-1 text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
+                                />
+                                <span className="text-sm font-semibold text-right tabular-nums min-w-[7.5rem]">
+                                  {fmtMoney(item.quantity * item.unit_price)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                          {(() => {
+                            const secSub = refundSelectionSubtotal(lines);
+                            const secGct = refundTaxForSelection(secSub, inv.tax_rate);
+                            const secTot = secSub + secGct;
+                            return (
+                              <div className="text-right text-sm mt-2 text-[#1a2332] tabular-nums">
+                                <p className="font-bold text-[#e31e24] pt-0.5 border-t border-gray-100">
+                                  Total: {fmtMoney(secTot)}
+                                </p>
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {(() => {
+                  let combinedSub = 0;
+                  let combinedGct = 0;
+                  for (const inv of refundReceiptLinkedInvoices) {
+                    if (!invoiceCanProcessRefund(inv)) continue;
+                    const invId = String(inv.id);
+                    const lines = refundLinesByInvoiceId[invId] ?? [];
+                    const secSub = refundSelectionSubtotal(lines);
+                    combinedSub += secSub;
+                    combinedGct += refundTaxForSelection(secSub, inv.tax_rate);
+                  }
+                  const combinedTotal = combinedSub + combinedGct;
+                  return (
+                    <div className="text-right border-t border-gray-200 pt-3 mt-2 min-w-0">
+                      <p className="text-lg font-bold text-[#1a2332] tabular-nums break-words">
+                        Total: {fmtMoney(combinedTotal)}
+                      </p>
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div className="mb-4 rounded-lg border border-gray-200 p-3 min-w-0">
+                  <div className="flex flex-wrap items-start justify-between gap-2 mb-2 min-w-0">
+                    <span className="font-semibold text-[#1a2332] shrink-0">{refundInvoice.invoice_number}</span>
+                    <span className="text-xs font-medium text-gray-700 tabular-nums text-right shrink-0">
+                      Invoice total: {fmtMoney(Number(refundInvoice.total) || 0)}
+                    </span>
                   </div>
+                  <label className="block text-sm font-semibold mb-2">Items to Refund</label>
+                  {refundItems.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0 min-w-0"
+                    >
+                      <span className="text-sm min-w-0 flex-1 break-words">{item.product_name}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          placeholder="0"
+                          value={item.quantity === 0 ? '' : String(item.quantity)}
+                          onChange={(e) => {
+                            const r = e.target.value.replace(/[^\d]/g, '');
+                            const q = r === '' ? 0 : parseInt(r, 10) || 0;
+                            const cap =
+                              invoiceLineItemsRemainingForRefund(refundInvoice, refunds)[idx]?.quantity ?? 0;
+                            const clamped = Math.min(Math.max(0, cap), q);
+                            setRefundItems(
+                              refundItems.map((ri, i) =>
+                                i === idx ? { ...ri, quantity: clamped, total: clamped * ri.unit_price } : ri
+                              )
+                            );
+                          }}
+                          className={`w-16 shrink-0 text-center border border-gray-200 rounded-md py-1 text-sm ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
+                        />
+                        <span className="text-sm font-semibold text-right tabular-nums min-w-[7.5rem]">
+                          {fmtMoney(item.quantity * item.unit_price)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {(() => {
+                    const secSub = refundSelectionSubtotal(refundItems);
+                    const secGct = refundTaxForSelection(secSub, refundInvoice.tax_rate);
+                    const secTot = secSub + secGct;
+                    return (
+                      <div className="text-right mt-2 text-sm text-[#1a2332] tabular-nums">
+                        <p className="font-bold text-[#e31e24] pt-0.5 border-t border-gray-100">
+                          Total: {fmtMoney(secTot)}
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
-              ))}
-              <p className="text-right text-lg font-bold text-[#e31e24] mt-2">Total: {fmtMoney(refundItems.reduce((s, i) => s + i.quantity * i.unit_price, 0))}</p>
-            </div>
+            )}
             <div className="mb-4">
               <label className="block text-sm font-semibold mb-1">Reason</label>
               <textarea value={refundReason} onChange={e => setRefundReason(e.target.value)} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none" placeholder="Reason for refund..." />
             </div>
             <div className="flex gap-2">
-              <button onClick={async () => {
-                const activeItems = refundItems.filter(i => i.quantity > 0);
-                if (activeItems.length === 0) {
-                  notify({ variant: 'error', title: 'Refund not processed', subtitle: 'POS → Refunds — Select at least one item' });
-                  return;
-                }
-                const refund = await processRefund({
-                  invoice: refundInvoice,
-                  items: activeItems,
-                  refundType,
-                  reason: refundReason,
-                  notes: '',
-                  receiptId: refundReceiptId,
-                });
-                if (refund) {
-                  printDocument({ type: 'refund', docNumber: refund.refund_number, date: refund.created_at, customerName: refund.customer_name, items: refund.items, subtotal: refund.subtotal, taxAmount: refund.tax_amount, total: refund.total, refundType: refund.refund_type, reason: refund.reason });
-                  await loadData();
-                  notify({ variant: 'success', title: 'Refund recorded', subtitle: `POS → Refunds — ${refund.refund_number}` });
-                } else {
-                  notify({ variant: 'error', title: 'Refund not saved', subtitle: 'POS → Refunds' });
-                }
-                setRefundInvoice(null);
-                setRefundReceiptId(null);
-              }} className="flex-1 py-2.5 bg-[#e31e24] text-white rounded-lg text-sm font-bold hover:bg-[#c91a1f]">Process Refund & Print</button>
               <button
+                type="button"
+                disabled={refundProcessing}
+                onClick={async () => {
+                  const isReceiptFlow = Boolean(
+                    refundLinesByInvoiceId &&
+                      refundReceiptLinkedInvoices &&
+                      refundReceiptLinkedInvoices.length > 0
+                  );
+                  const ops: { invoice: POSInvoice; items: POSLineItem[] }[] = [];
+                  if (isReceiptFlow && refundReceiptLinkedInvoices && refundLinesByInvoiceId) {
+                    for (const inv of refundReceiptLinkedInvoices) {
+                      if (!invoiceCanProcessRefund(inv)) continue;
+                      const invId = String(inv.id);
+                      const lines = refundLinesByInvoiceId[invId];
+                      const activeItems = (lines ?? []).filter((i) => i.quantity > 0);
+                      if (activeItems.length === 0) continue;
+                      const fresh = invoices.find((x) => String(x.id) === invId) ?? inv;
+                      ops.push({ invoice: fresh, items: activeItems });
+                    }
+                    if (ops.length === 0) {
+                      notify({
+                        variant: 'error',
+                        title: 'Refund not processed',
+                        subtitle: 'POS → Refunds — Enter a quantity on at least one invoice',
+                      });
+                      return;
+                    }
+                  } else {
+                    const activeItems = refundItems.filter((i) => i.quantity > 0);
+                    if (activeItems.length === 0) {
+                      notify({
+                        variant: 'error',
+                        title: 'Refund not processed',
+                        subtitle: 'POS → Refunds — Select at least one item',
+                      });
+                      return;
+                    }
+                  }
+
+                  if (refundSubmitLockRef.current) return;
+                  refundSubmitLockRef.current = true;
+                  setRefundProcessing(true);
+                  try {
+                    let refund: POSRefund | null = null;
+                    if (isReceiptFlow) {
+                      refund = await processRefundSegments({
+                        segments: ops,
+                        refundType,
+                        reason: refundReason,
+                        notes: '',
+                        receiptId: refundReceiptId,
+                      });
+                    } else {
+                      const activeItems = refundItems.filter((i) => i.quantity > 0);
+                      refund = await processRefund({
+                        invoice: refundInvoice!,
+                        items: activeItems,
+                        refundType,
+                        reason: refundReason,
+                        notes: '',
+                        receiptId: refundReceiptId,
+                      });
+                    }
+                    if (!refund) {
+                      notify({
+                        variant: 'error',
+                        title: 'Refund not saved',
+                        subtitle: 'POS → Refunds',
+                      });
+                      await loadData();
+                      return;
+                    }
+                    printDocument(buildRefundPrintDocProps(refund, invoices));
+                    await loadData();
+                    notify({
+                      variant: 'success',
+                      title: 'Refund recorded',
+                      subtitle: `POS → Refunds — ${refund.refund_number}`,
+                    });
+                    if (refundType === 'exchange') {
+                      const cid = String(refund.customer_id || '').trim();
+                      if (cid) {
+                        setCheckoutExchangeNavKey((k) => k + 1);
+                        setCheckoutExchangeHandoff({ customerId: cid });
+                        setCheckoutSource(null);
+                        setActivePage('pos-checkout');
+                      }
+                    }
+                    setRefundInvoice(null);
+                    setRefundReceiptId(null);
+                    setRefundReceiptLinkedInvoices(null);
+                    setRefundLinesByInvoiceId(null);
+                    setRefundSourceReceiptNumber(null);
+                  } finally {
+                    refundSubmitLockRef.current = false;
+                    setRefundProcessing(false);
+                  }
+                }}
+                className={`flex-1 py-2.5 rounded-lg text-sm font-bold text-white transition-colors ${
+                  refundProcessing
+                    ? 'cursor-wait bg-[#e31e24]/50 opacity-80'
+                    : 'bg-[#e31e24] hover:bg-[#c91a1f]'
+                }`}
+              >
+                {refundProcessing ? 'Processing…' : 'Process Refund & Print'}
+              </button>
+              <button
+                type="button"
+                disabled={refundProcessing}
                 onClick={() => {
+                  if (refundProcessing) return;
                   setRefundInvoice(null);
                   setRefundReceiptId(null);
+                  setRefundReceiptLinkedInvoices(null);
+                  setRefundLinesByInvoiceId(null);
+                  setRefundSourceReceiptNumber(null);
+                  setRefundProcessing(false);
+                  refundSubmitLockRef.current = false;
                 }}
-                className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm"
+                className={`px-4 py-2.5 border border-gray-200 rounded-lg text-sm ${
+                  refundProcessing ? 'cursor-not-allowed opacity-50' : ''
+                }`}
               >
                 Cancel
               </button>

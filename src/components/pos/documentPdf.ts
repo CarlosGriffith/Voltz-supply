@@ -4,9 +4,13 @@ import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { autoTable } from 'jspdf-autotable';
 import type { PrintDocProps } from './posPrintTypes';
+import type { POSLineItem } from '@/lib/posData';
 import {
   buildQuotationDocumentHtml,
+  compareReceiptDocLabelsForSort,
   computeTaxableSplit,
+  displayRefundDocNumber,
+  getEffectiveLineInvoiceLabel,
   QUOTATION_DOC_WIDTH_PX,
   wrapQuotationFragmentForPdfMount,
 } from './quotationHtml';
@@ -168,6 +172,8 @@ function buildDocumentPdfVector(
   const contact = loadContactDetails();
   const title = typeTitle(props.type);
   const short = typeShort(props.type);
+  const docNumberDisplay =
+    props.type === 'refund' ? displayRefundDocNumber(props.docNumber) : props.docNumber;
   const tr = safeNum(props.taxRate);
   const ta = safeNum(props.taxAmount);
   const disc = safeNum(props.discountAmount);
@@ -202,7 +208,7 @@ function buildDocumentPdfVector(
   const metaRight = [
     `Date: ${fmtDatePOS(props.date)}`,
     `Page: 1 of 1`,
-    `${short} #: ${props.docNumber}`,
+    `${short} #: ${docNumberDisplay}`,
     `Printed: ${fmtDatePOS(new Date())}`,
   ];
   if (props.taxRegistrationNo) metaRight.push(`GCT REG: ${props.taxRegistrationNo}`);
@@ -257,19 +263,63 @@ function buildDocumentPdfVector(
   });
   y = barY + 16;
 
-  const body = props.items.map((item) => {
-    const sku = item.part_number || item.product_id || '—';
-    const uom = item.uom?.trim() || 'EACH';
-    const flag = lineFlag(item, ta, tr);
-    return [
-      String(sku),
-      item.product_name,
-      safeNum(item.quantity).toFixed(2),
-      uom,
-      fmtCurrency(item.unit_price),
-      `${fmtCurrency(item.total)} ${flag}`,
-    ];
-  });
+  const body =
+    props.type === 'refund' || props.type === 'receipt'
+      ? (() => {
+          const items = props.items;
+          const pairs = items.map((item, rowIdx) => ({
+            item,
+            invLabel: getEffectiveLineInvoiceLabel(props, item as POSLineItem, rowIdx),
+          }));
+          const ordered = [...pairs].sort((a, b) =>
+            compareReceiptDocLabelsForSort(a.invLabel, b.invLabel)
+          );
+          return ordered.map(({ item, invLabel }, idx) => {
+            const sku = item.part_number || item.product_id || '—';
+            const uom = item.uom?.trim() || 'EACH';
+            const flag = lineFlag(item, ta, tr);
+            const cur = String(invLabel ?? '').trim();
+            const prev =
+              idx > 0 ? String(ordered[idx - 1]?.invLabel ?? '').trim() : '';
+            const sameInvoiceGroup = idx > 0 && cur !== '' && cur === prev;
+            const col0 =
+              cur !== '' ? (sameInvoiceGroup ? String(sku) : `${cur}:\n${sku}`) : String(sku);
+            const src =
+              props.type === 'refund'
+                ? String((item as POSLineItem).source_invoice_number || '').trim()
+                : '';
+            const desc =
+              props.type === 'refund'
+                ? cur !== ''
+                  ? item.product_name
+                  : src !== ''
+                    ? `${src} — ${item.product_name}`
+                    : item.product_name
+                : item.product_name;
+            return [
+              col0,
+              desc,
+              safeNum(item.quantity).toFixed(2),
+              uom,
+              fmtCurrency(item.unit_price),
+              `${fmtCurrency(item.total)} ${flag}`,
+            ];
+          });
+        })()
+      : props.items.map((item) => {
+          const sku = item.part_number || item.product_id || '—';
+          const uom = item.uom?.trim() || 'EACH';
+          const flag = lineFlag(item, ta, tr);
+          const desc = item.product_name;
+          return [
+            String(sku),
+            desc,
+            safeNum(item.quantity).toFixed(2),
+            uom,
+            fmtCurrency(item.unit_price),
+            `${fmtCurrency(item.total)} ${flag}`,
+          ];
+        });
 
   autoTable(doc, {
     startY: y,
@@ -323,7 +373,9 @@ function buildDocumentPdfVector(
   ty += 5;
   doc.setFont('helvetica', 'normal');
   if (ta > 0) {
-    doc.text(`Total GCT (${tr}%):`, rightX - 40, ty, { align: 'right' });
+    const gctLabel =
+      props.type === 'receipt' || props.type === 'refund' ? 'Total GCT:' : `Total GCT (${tr}%):`;
+    doc.text(gctLabel, rightX - 40, ty, { align: 'right' });
     doc.text(fmtCurrency(ta), rightX, ty, { align: 'right' });
     ty += 5;
   }
@@ -351,7 +403,7 @@ function buildDocumentPdfVector(
 
   const dataUri = doc.output('datauristring');
   const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
-  const safeNumStr = props.docNumber.replace(/[^\w.-]+/g, '_');
+  const safeNumStr = docNumberDisplay.replace(/[^\w.-]+/g, '_');
   const filename = `Voltz-${short}-${safeNumStr}.pdf`;
 
   return { filename, base64 };
@@ -366,7 +418,9 @@ export async function buildDocumentPdfBase64(
   options?: { companyName?: string }
 ): Promise<{ filename: string; base64: string }> {
   const companyName = options?.companyName || 'Voltz Industrial Supply';
-  const safeNumStr = props.docNumber.replace(/[^\w.-]+/g, '_');
+  const docNumberDisplay =
+    props.type === 'refund' ? displayRefundDocNumber(props.docNumber) : props.docNumber;
+  const safeNumStr = docNumberDisplay.replace(/[^\w.-]+/g, '_');
   const short = typeShort(props.type);
   const filename = `Voltz-${short}-${safeNumStr}.pdf`;
 

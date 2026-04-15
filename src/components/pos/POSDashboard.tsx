@@ -199,8 +199,15 @@ const POSDashboard: React.FC<POSDashboardProps> = ({
     // Average order value
     const avgOrderValue = paidInvoices.length > 0 ? totalRevenue / paidInvoices.length : 0;
 
-    // Pending orders
-    const pendingOrders = o.filter((row) => row.status !== 'completed' && row.status !== 'cancelled').length;
+    // Pending: pre-invoice workflow (Reviewed / Printed / Emailed) OR linked invoice still Unpaid
+    const preInvoiceOrderStatuses = new Set<POSOrder['status']>(['reviewed', 'printed', 'emailed']);
+    const pendingOrders = o.filter((row) => {
+      const iid = row.invoice_id != null ? String(row.invoice_id).trim() : '';
+      if (!iid) return preInvoiceOrderStatuses.has(row.status);
+      const linked = inv.find((i) => String(i.id) === iid);
+      if (linked) return normalizeInvoiceStatus(linked.status) === INVOICE_STATUS_UNPAID;
+      return row.status === 'invoice_generated_unpaid';
+    }).length;
     const unpaidInvoices = inv.filter(i => normalizeInvoiceStatus(i.status) === INVOICE_STATUS_UNPAID).length;
     const newRequests = qrList.filter((req) => req.status === 'new').length;
 

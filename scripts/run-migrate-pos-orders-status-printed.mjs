@@ -1,10 +1,7 @@
 /**
- * Clears POS quote requests, quotes, orders, invoices, receipts, refunds, sent-emails log, and pos_customers.
- * Resets pos_doc_counters so the next numbers are QT-1000001, OR-1000001, INV-1000001, RT-1000001, REF-1000001.
+ * Adds `printed` to pos_orders.status CHECK (scripts/migrate-pos-orders-status-printed.sql).
  *
- *   npm run db:clear-pos-documents-reset-numbers
- *
- * Requires AIVEN_MYSQL_PASSWORD (and optional host/user/database per other db scripts).
+ *   npm run db:migrate:pos-orders-status-printed
  */
 import 'dotenv/config';
 import fs from 'fs';
@@ -21,6 +18,8 @@ const user = process.env.AIVEN_MYSQL_USER || 'root';
 const password = process.env.AIVEN_MYSQL_PASSWORD || '';
 const database = process.env.AIVEN_MYSQL_DATABASE || 'defaultdb';
 
+const sqlPath = path.join(__dirname, 'migrate-pos-orders-status-printed.sql');
+
 if (!password) {
   console.error('Set AIVEN_MYSQL_PASSWORD in .env and run again.');
   process.exit(1);
@@ -28,17 +27,12 @@ if (!password) {
 
 const ssl = getMysqlSslConfig();
 if (!ssl && String(host).includes('aivencloud.com')) {
-  console.error(
-    'Aiven MySQL requires TLS. Place CA at scripts/aiven-ca.pem or set AIVEN_CA_PATH.',
-    'Expected file:',
-    defaultCaPath
-  );
+  console.error('Aiven MySQL requires TLS. CA:', defaultCaPath);
   process.exit(1);
 }
 
-const sqlPath = path.join(__dirname, 'clear-pos-documents-reset-numbers.sql');
 const raw = fs.readFileSync(sqlPath, 'utf8');
-const stmts = raw
+const statements = raw
   .split(/\r?\n/)
   .filter((line) => !/^\s*--/.test(line))
   .join('\n')
@@ -57,17 +51,10 @@ const conn = await mysql.createConnection({
   connectTimeout: Number(process.env.AIVEN_MYSQL_CONNECT_TIMEOUT_MS || 30_000),
 });
 
-await conn.query('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
-
-console.log('Connected to', host, 'database', database);
-for (const stmt of stmts) {
-  const [res] = await conn.query(stmt);
-  const n = res?.affectedRows;
-  const label = stmt.length > 72 ? `${stmt.slice(0, 72)}…` : stmt;
-  if (typeof n === 'number') console.log('OK:', label, '→', n, 'rows affected');
-  else console.log('OK:', label);
+console.log('Connected to', host, database);
+for (let i = 0; i < statements.length; i++) {
+  await conn.query(statements[i]);
+  console.log(`OK — statement ${i + 1}/${statements.length}`);
 }
 await conn.end();
-console.log(
-  'Done — POS documents and customers cleared; counters reset (next: QT-1000001, OR-1000001, INV-1000001, RT-1000001, REF-1000001).'
-);
+console.log('Done — pos_orders.status allows printed.');

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, User, FileText, ShoppingCart, Receipt, ArrowLeft, Info,
+  Search, CheckCircle2, Wallet, CreditCard, Building2, Package, Plus, Minus, Trash2, User, FileText, ShoppingCart, Receipt, ArrowLeft,
 } from 'lucide-react';
 import { Product } from '@/data/products';
 import { fetchCustomProducts, fetchProductOverrides, fetchConfig, updateProductStockCount } from '@/lib/cmsData';
@@ -14,10 +14,14 @@ import {
   POSOrder,
   POSQuote,
   POSReceipt,
+  POSRefund,
+  asPosRows,
+  checkoutDocumentExcludedDueToRefundedInvoice,
   fetchCustomers,
   fetchInvoices,
   fetchOrders,
   fetchQuotes,
+  fetchRefunds,
   generateDocNumber,
   saveInvoice,
   saveOrder,
@@ -58,13 +62,24 @@ import {
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { generateEmailHTML } from '@/components/pos/POSPrintTemplate';
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from './quotationHtml';
+import { buildReceiptPrintDocPropsForPreview } from '@/components/pos/receiptPreviewProps';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 type SourceType = 'quote' | 'order' | 'invoice';
 
 interface POSCheckoutProps {
   source?: { sourceType: SourceType; sourceDocId: string } | null;
+  /** After Exchange refund: intro dialog, then CRM + Pay with Store Credit + item search. */
+  exchangeHandoff?: { customerId: string } | null;
+  onExchangeHandoffConsumed?: () => void;
   onDone: () => void;
   onBack?: () => void;
   /** Called after store credit is applied so the host (e.g. CMS) can refresh the customer list from the server. */
@@ -157,6 +172,25 @@ function mergeReceiptInvoiceLinksFromStreams(
     m.set(id, (m.get(id) ?? 0) + alloc);
   }
   return [...m.entries()].map(([invoice_id, amount_applied]) => ({ invoice_id, amount_applied }));
+}
+
+/** Merge freshly saved invoices into the list used for receipt preview (same lookup as View Receipt). */
+function invoicesMergedWithPersistResults(
+  base: POSInvoice[],
+  persistResults: Array<{ invoice: POSInvoice | null }>
+): POSInvoice[] {
+  const map = new Map<string, POSInvoice>();
+  for (const inv of base) {
+    if (inv?.id != null && String(inv.id).trim() !== '') map.set(String(inv.id), inv);
+  }
+  for (const pr of persistResults) {
+    const inv = pr.invoice;
+    if (!inv?.id) continue;
+    const id = String(inv.id);
+    const prev = map.get(id);
+    map.set(id, prev ? { ...prev, ...inv } : inv);
+  }
+  return [...map.values()];
 }
 
 /** Whole cents — avoids float drift on dollar comparisons. */
@@ -374,88 +408,91 @@ function normalizeCheckoutLineItem(i: CheckoutLineItem): CheckoutLineItem {
   };
 }
 
-/** Document column tooltip / full label: doc number(s) plus "New" or "New: n" when search-added units exist. */
+/** Document column tooltip / full label: mirrors Doc No. cell (per–doc-qty when multiple sources). */
 function checkoutDocColumnLabel(item: CheckoutLineItem): string {
   const dq = item.checkoutDirectQty ?? 0;
   const db = docBackedQty(item);
   const allocs = resolvedDocAllocationsForDisplay(item);
-  const newTag = dq > 0 ? `New: ${dq}` : '';
-  if (allocs.length > 0) {
-    const docPart =
-      allocs.length === 1
-        ? allocs[0].label
-        : allocs.map((a) => `${a.label}: ${a.qty}`).join(' · ');
-    return dq > 0 ? `${docPart} · ${newTag}` : docPart;
-  }
   const base = item.checkoutDocLabel?.trim();
-  if (dq > 0) {
-    if (db > 0 && base) return `${base} · ${newTag}`;
-    return newTag;
+
+  if (allocs.length === 0 && dq > 0 && db > 0 && base) {
+    return `${base}: ${db} · New: ${dq}`;
   }
-  return base ?? '—';
+
+  const nDoc = allocs.length;
+  const recordCount = nDoc + (dq > 0 ? 1 : 0);
+
+  if (recordCount === 0) {
+    return base ?? '—';
+  }
+  if (recordCount === 1) {
+    if (dq > 0 && nDoc === 0) return 'New';
+    return allocs[0].label;
+  }
+  const parts: string[] = allocs.map((a) => `${a.label}: ${a.qty}`);
+  if (dq > 0) parts.push(`New: ${dq}`);
+  return parts.join(' · ');
 }
 
-/** Doc No. column: stack "DOC: qty" per source when multiple docs; keep New on its own line when present. */
+/** Doc No. column: when a line splits across multiple doc #s (and/or New), show `Label: qty` per source. */
 function CheckoutDocumentColumnCell({ item }: { item: CheckoutLineItem }) {
   const dq = item.checkoutDirectQty ?? 0;
+  const db = docBackedQty(item);
   const allocs = resolvedDocAllocationsForDisplay(item);
+  const base = item.checkoutDocLabel?.trim();
   const title = checkoutDocColumnLabel(item);
 
-  const docStack =
-    allocs.length > 0 ? (
-      <div className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-        {allocs.map((a) => (
-          <span
-            key={a.label}
-            className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]"
-          >
-            {allocs.length === 1 ? a.label : `${a.label}: ${a.qty}`}
-          </span>
-        ))}
-      </div>
-    ) : null;
-
-  if (dq > 0 && allocs.length > 0) {
-    return (
-      <div className="flex min-w-0 flex-col items-start gap-0.5 text-left" title={title}>
-        {docStack}
-        <span className="text-[11px] font-medium leading-tight text-[#1a2332] tabular-nums">New: {dq}</span>
-      </div>
-    );
+  type Row = { key: string; text: string };
+  const rows: Row[] = [];
+  if (allocs.length === 0 && dq > 0 && db > 0 && base) {
+    rows.push({ key: 'lbl', text: `${base}: ${db}` });
+    rows.push({ key: 'new', text: `New: ${dq}` });
+  } else {
+    for (let i = 0; i < allocs.length; i++) {
+      const a = allocs[i];
+      rows.push({ key: `a-${i}-${a.label}`, text: `${a.label}: ${a.qty}` });
+    }
+    if (dq > 0) {
+      rows.push({
+        key: 'new',
+        text: allocs.length > 0 ? `New: ${dq}` : 'New',
+      });
+    }
   }
 
-  if (dq > 0 && allocs.length === 0) {
+  const recordCount = rows.length;
+
+  if (recordCount === 0) {
     return (
-      <p className="text-[11px] font-medium leading-tight text-left text-[#1a2332] tabular-nums" title={title}>
-        New: {dq}
+      <p className="text-[11px] font-medium leading-tight text-left text-[#1a2332] truncate" title={title}>
+        {base ?? '—'}
       </p>
     );
   }
 
-  if (allocs.length > 1) {
-    return (
-      <div className="flex min-w-0 flex-col items-start gap-0.5 text-left" title={title}>
-        {docStack}
-      </div>
-    );
-  }
-
-  if (allocs.length === 1) {
+  if (recordCount === 1) {
+    const onlyNew = dq > 0 && allocs.length === 0;
     return (
       <p
-        className="text-[11px] font-medium leading-snug text-left text-[#1a2332] tabular-nums [overflow-wrap:anywhere]"
+        className={`text-[11px] font-medium leading-tight text-left text-[#1a2332] tabular-nums ${onlyNew ? '' : 'leading-snug [overflow-wrap:anywhere]'}`}
         title={title}
       >
-        {allocs[0].label}
+        {onlyNew ? 'New' : allocs[0].label}
       </p>
     );
   }
 
-  const base = item.checkoutDocLabel?.trim();
   return (
-    <p className="text-[11px] font-medium leading-tight text-left text-[#1a2332] truncate" title={title}>
-      {base ?? '—'}
-    </p>
+    <div className="flex min-w-0 flex-col items-start gap-0.5 text-left" title={title}>
+      {rows.map((r) => (
+        <span
+          key={r.key}
+          className="text-[11px] font-medium leading-snug text-[#1a2332] tabular-nums [overflow-wrap:anywhere]"
+        >
+          {r.text}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -610,68 +647,6 @@ function resolveLabelToStreamKey(
   const inv = invoices.find((x) => normDocToken(String(x.invoice_number || '')) === n);
   if (inv) return `invoice:${inv.id}`;
   return 'direct';
-}
-
-function documentNumberForReceiptFromStreamKey(
-  key: string,
-  quotes: POSQuote[],
-  orders: POSOrder[],
-  invoices: POSInvoice[]
-): string | undefined {
-  if (key === 'direct') return undefined;
-  if (key.startsWith('invoice:')) {
-    const inv = invoices.find((x) => String(x.id) === key.slice(8));
-    return inv?.invoice_number;
-  }
-  if (key.startsWith('quote:')) {
-    const q = quotes.find((x) => String(x.id) === key.slice(6));
-    if (!q) return undefined;
-    if (q.invoice_id && String(q.invoice_id).trim() !== '') {
-      const inv = invoices.find((x) => String(x.id) === String(q.invoice_id));
-      if (inv?.invoice_number) return inv.invoice_number;
-    }
-    return q.quote_number;
-  }
-  if (key.startsWith('order:')) {
-    const o = orders.find((x) => String(x.id) === key.slice(6));
-    if (!o) return undefined;
-    if (o.invoice_id && String(o.invoice_id ?? '').trim() !== '') {
-      const inv = invoices.find((x) => String(x.id) === String(o.invoice_id));
-      if (inv?.invoice_number) return inv.invoice_number;
-    }
-    return o.order_number;
-  }
-  return undefined;
-}
-
-function receiptDocumentNumberForCheckoutLine(
-  item: CheckoutLineItem,
-  quotes: POSQuote[],
-  orders: POSOrder[],
-  invoices: POSInvoice[]
-): string | undefined {
-  const allocs = resolvedDocAllocationsForDisplay(item);
-  let label: string | undefined;
-  if (allocs.length > 0) {
-    label = allocs[0].label;
-  } else {
-    const raw = stripDocLabelSuffix(item.checkoutDocLabel || '');
-    const parts = splitDocLabelParts(raw);
-    if (parts.length > 0) label = parts[0];
-  }
-  if (!label || !String(label).trim()) return undefined;
-  const key = resolveLabelToStreamKey(String(label).trim(), quotes, orders, invoices);
-  return documentNumberForReceiptFromStreamKey(key, quotes, orders, invoices);
-}
-
-function receiptLineInvoiceNumbersFromCart(
-  cart: CheckoutLineItem[],
-  quotes: POSQuote[],
-  orders: POSOrder[],
-  invoices: POSInvoice[]
-): string[] {
-  const rows = cart.filter((i) => i.includeInTotal !== false && (Number(i.quantity) || 0) > 0);
-  return rows.map((line) => receiptDocumentNumberForCheckoutLine(line, quotes, orders, invoices) ?? '');
 }
 
 function checkoutLineCloneForStream(
@@ -956,17 +931,6 @@ function streamOutstandingWaterfallCap(
   return dtot;
 }
 
-function splitProportionally(total: number, weights: number[]): number[] {
-  if (weights.length === 0) return [];
-  const sum = weights.reduce((a, b) => a + b, 0);
-  if (sum <= 1e-9) return weights.map(() => 0);
-  const raw = weights.map((w) => (total * w) / sum);
-  const rounded = raw.map((x) => Math.round(x * 100) / 100);
-  const drift = total - rounded.reduce((a, b) => a + b, 0);
-  rounded[rounded.length - 1] = Math.round((rounded[rounded.length - 1] + drift) * 100) / 100;
-  return rounded;
-}
-
 /** Oldest quote/order/invoice first (by document created_at); ad-hoc “direct” lines last. */
 function streamSpecOldestFirstTimestamp(
   spec: CheckoutStreamSpec,
@@ -1118,6 +1082,82 @@ function lineItemsForPersistence(items: CheckoutLineItem[]): POSLineItem[] {
         ...rest
       }) => rest
     );
+}
+
+/** Primary INV- label for receipt line grouping (matches checkout Doc allocations). */
+function primaryInvoiceLabelForReceiptGrouping(item: CheckoutLineItem): string {
+  const allocs = resolvedDocAllocationsForDisplay(item);
+  for (const a of allocs) {
+    const lab = String(a.label || '').trim();
+    if (/^INV-/i.test(lab)) return lab;
+  }
+  const base = stripDocLabelSuffix(item.checkoutDocLabel) ?? '';
+  for (const part of splitDocLabelParts(base)) {
+    const lab = part.trim();
+    if (/^INV-/i.test(lab)) return lab;
+  }
+  const flat = base.trim();
+  if (/^INV-/i.test(flat)) return flat;
+  return '';
+}
+
+/**
+ * One saved line per checkout row, split into multiple receipt rows when the same product is allocated
+ * across more than one invoice (each row gets the correct qty, total, and `receipt_invoice_number`).
+ */
+function attachReceiptInvoiceLabelsToLineItems(
+  persisted: POSLineItem[],
+  checkoutLines: CheckoutLineItem[]
+): POSLineItem[] {
+  const filtered = checkoutLines.filter(
+    (i) => i.includeInTotal !== false && (Number(i.quantity) || 0) > 0
+  );
+  const out: POSLineItem[] = [];
+  for (let idx = 0; idx < persisted.length; idx++) {
+    const it = persisted[idx];
+    const cli = filtered[idx] ?? ({} as CheckoutLineItem);
+    const allocs = resolvedDocAllocationsForDisplay(cli);
+    const invAllocs = allocs
+      .map((a) => ({
+        label: String(a.label || '').trim(),
+        qty: Math.max(0, Math.floor(Number(a.qty) || 0)),
+      }))
+      .filter((a) => /^INV-/i.test(a.label) && a.qty > 0);
+
+    if (invAllocs.length >= 2) {
+      const sumInv = invAllocs.reduce((s, a) => s + a.qty, 0);
+      const lineQty = Math.max(0, Math.floor(Number(it.quantity) || 0));
+      if (sumInv !== lineQty) {
+        const lab = primaryInvoiceLabelForReceiptGrouping(cli);
+        out.push(lab ? { ...it, receipt_invoice_number: lab } : { ...it });
+        continue;
+      }
+      const unit = num(it.unit_price);
+      for (const a of invAllocs) {
+        const q = a.qty;
+        const totalLine = Math.round(q * unit * 100) / 100;
+        out.push({
+          ...it,
+          quantity: q,
+          total: totalLine,
+          receipt_invoice_number: a.label,
+        });
+      }
+      continue;
+    }
+
+    if (invAllocs.length === 1) {
+      const lineQty = Math.max(0, Math.floor(Number(it.quantity) || 0));
+      if (invAllocs[0].qty === lineQty) {
+        out.push({ ...it, receipt_invoice_number: invAllocs[0].label });
+        continue;
+      }
+    }
+
+    const lab = primaryInvoiceLabelForReceiptGrouping(cli);
+    out.push(lab ? { ...it, receipt_invoice_number: lab } : { ...it });
+  }
+  return out;
 }
 
 /** Document number only (section/type context already identifies quote vs order vs invoice). */
@@ -1326,15 +1366,17 @@ function documentBelongsToMatchedCustomers(
 }
 
 /**
- * Quotes / orders / open invoices for one CRM customer, same eligibility and caps as the search
- * “Customer documents” list (paid-off links excluded, blocked keys excluded).
+ * Quotes / orders / open invoices for one CRM customer when appending lines after picking the customer.
+ * Same eligibility as the search dropdown (paid-off / dormant excluded, blocked keys excluded), then
+ * {@link dedupeCheckoutEligibleDocsToLatestPerStream} so only one document per QT/OR/INV chain is loaded.
  */
 function collectCheckoutEligibleDocsForCustomer(
   c: POSCustomer,
   quotes: POSQuote[],
   orders: POSOrder[],
   invoices: POSInvoice[],
-  blocked: Set<string>
+  blocked: Set<string>,
+  refunds: POSRefund[]
 ): { quotes: POSQuote[]; orders: POSOrder[]; invoices: POSInvoice[] } {
   const invById = new Map(invoices.map((i) => [String(i.id), i]));
   const quotesForSearch = quotes.filter(
@@ -1346,11 +1388,133 @@ function collectCheckoutEligibleDocsForCustomer(
   const belongs = (doc: POSQuote | POSOrder | POSInvoice) =>
     documentBelongsToMatchedCustomers(doc, matched);
   const notBlocked = (doc: POSQuote | POSOrder | POSInvoice) => !blocked.has(docEntryKey(doc));
-  return {
-    quotes: quotesForSearch.filter(belongs).filter(notBlocked).slice(0, 8),
-    orders: ordersForSearch.filter(belongs).filter(notBlocked).slice(0, 8),
-    invoices: openInvoices.filter(belongs).filter(notBlocked).slice(0, 8),
+  const notRefundedStream = (doc: POSQuote | POSOrder | POSInvoice) =>
+    !checkoutDocumentExcludedDueToRefundedInvoice(doc, invoices, refunds);
+  const base = {
+    quotes: quotesForSearch.filter(belongs).filter(notBlocked).filter(notRefundedStream),
+    orders: ordersForSearch.filter(belongs).filter(notBlocked).filter(notRefundedStream),
+    invoices: openInvoices.filter(belongs).filter(notBlocked).filter(notRefundedStream),
   };
+  return dedupeCheckoutEligibleDocsToLatestPerStream(base.quotes, base.orders, base.invoices, quotes, orders, invoices);
+}
+
+function linkedDocNeighborsForCheckoutCluster(
+  key: string,
+  qBy: Map<string, POSQuote>,
+  oBy: Map<string, POSOrder>,
+  iBy: Map<string, POSInvoice>
+): string[] {
+  const out: string[] = [];
+  if (key.startsWith('q:')) {
+    const q = qBy.get(key.slice(2));
+    if (!q) return out;
+    if (q.order_id != null && String(q.order_id).trim() !== '') out.push(`o:${String(q.order_id).trim()}`);
+    if (q.invoice_id != null && String(q.invoice_id).trim() !== '') out.push(`i:${String(q.invoice_id).trim()}`);
+  } else if (key.startsWith('o:')) {
+    const o = oBy.get(key.slice(2));
+    if (!o) return out;
+    if (o.quote_id != null && String(o.quote_id).trim() !== '') out.push(`q:${String(o.quote_id).trim()}`);
+    if (o.invoice_id != null && String(o.invoice_id).trim() !== '') out.push(`i:${String(o.invoice_id).trim()}`);
+  } else if (key.startsWith('i:')) {
+    const inv = iBy.get(key.slice(2));
+    if (!inv) return out;
+    if (inv.quote_id != null && String(inv.quote_id).trim() !== '') out.push(`q:${String(inv.quote_id).trim()}`);
+    if (inv.order_id != null && String(inv.order_id).trim() !== '') out.push(`o:${String(inv.order_id).trim()}`);
+  }
+  return out.filter((k) => {
+    if (k.startsWith('q:')) return qBy.has(k.slice(2));
+    if (k.startsWith('o:')) return oBy.has(k.slice(2));
+    if (k.startsWith('i:')) return iBy.has(k.slice(2));
+    return false;
+  });
+}
+
+function bfsCheckoutDocChainComponent(
+  startKey: string,
+  qBy: Map<string, POSQuote>,
+  oBy: Map<string, POSOrder>,
+  iBy: Map<string, POSInvoice>
+): Set<string> {
+  const seen = new Set<string>();
+  const stack = [startKey];
+  while (stack.length > 0) {
+    const k = stack.pop()!;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    for (const nb of linkedDocNeighborsForCheckoutCluster(k, qBy, oBy, iBy)) {
+      if (!seen.has(nb)) stack.push(nb);
+    }
+  }
+  return seen;
+}
+
+function terminalDocSortMs(doc: POSQuote | POSOrder | POSInvoice): number {
+  const raw = (doc as { created_at?: string }).created_at;
+  const t = raw ? new Date(raw).getTime() : 0;
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Linked QT → OR → INV rows count as one “stream”: keep only the latest stage (invoice if any candidate
+ * in the chain, else order, else quote) so the items list shows one document per chain.
+ */
+function dedupeCheckoutEligibleDocsToLatestPerStream(
+  qCand: POSQuote[],
+  oCand: POSOrder[],
+  iCand: POSInvoice[],
+  quotes: POSQuote[],
+  orders: POSOrder[],
+  invoices: POSInvoice[]
+): { quotes: POSQuote[]; orders: POSOrder[]; invoices: POSInvoice[] } {
+  if (qCand.length === 0 && oCand.length === 0 && iCand.length === 0) {
+    return { quotes: [], orders: [], invoices: [] };
+  }
+  const qBy = new Map(quotes.map((q) => [String(q.id), q]));
+  const oBy = new Map(orders.map((o) => [String(o.id), o]));
+  const iBy = new Map(invoices.map((i) => [String(i.id), i]));
+
+  const candidateKeys = new Set<string>();
+  for (const q of qCand) candidateKeys.add(`q:${String(q.id)}`);
+  for (const o of oCand) candidateKeys.add(`o:${String(o.id)}`);
+  for (const i of iCand) candidateKeys.add(`i:${String(i.id)}`);
+
+  const remaining = new Set(candidateKeys);
+  const outQ: POSQuote[] = [];
+  const outO: POSOrder[] = [];
+  const outI: POSInvoice[] = [];
+
+  while (remaining.size > 0) {
+    const start = remaining.values().next().value as string;
+    const comp = bfsCheckoutDocChainComponent(start, qBy, oBy, iBy);
+    const inCand = [...comp].filter((k) => candidateKeys.has(k));
+    for (const k of inCand) remaining.delete(k);
+
+    const iKeys = inCand.filter((k) => k.startsWith('i:'));
+    const oKeys = inCand.filter((k) => k.startsWith('o:'));
+    const qKeys = inCand.filter((k) => k.startsWith('q:'));
+
+    if (iKeys.length > 0) {
+      const rows = iKeys
+        .map((k) => iBy.get(k.slice(2)))
+        .filter((x): x is POSInvoice => x != null)
+        .sort((a, b) => terminalDocSortMs(b) - terminalDocSortMs(a));
+      if (rows[0]) outI.push(rows[0]);
+    } else if (oKeys.length > 0) {
+      const rows = oKeys
+        .map((k) => oBy.get(k.slice(2)))
+        .filter((x): x is POSOrder => x != null)
+        .sort((a, b) => terminalDocSortMs(b) - terminalDocSortMs(a));
+      if (rows[0]) outO.push(rows[0]);
+    } else if (qKeys.length > 0) {
+      const rows = qKeys
+        .map((k) => qBy.get(k.slice(2)))
+        .filter((x): x is POSQuote => x != null)
+        .sort((a, b) => terminalDocSortMs(b) - terminalDocSortMs(a));
+      if (rows[0]) outQ.push(rows[0]);
+    }
+  }
+
+  return { quotes: outQ, orders: outO, invoices: outI };
 }
 
 /**
@@ -1475,6 +1639,8 @@ type PersistCtx = {
   quotes: POSQuote[];
   orders: POSOrder[];
   invoices: POSInvoice[];
+  /** Shown when invoice row saved but linked order step failed on the server. */
+  onInvoicePersistWarning?: (message: string) => void;
 };
 
 /** Single persistence path: new cart vs quote vs order vs invoice — all produce an invoice row when successful. */
@@ -1496,7 +1662,12 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
     quotes,
     orders,
     invoices,
+    onInvoicePersistWarning,
   } = ctx;
+  const invoiceSaveOpts = {
+    syncLinked: false as const,
+    ...(onInvoicePersistWarning ? { onPersistWarning: onInvoicePersistWarning } : {}),
+  };
   /** MySQL DECIMAL / JSON often yields strings — never use `+` with raw values (concat bugs e.g. 401 + "350" → "401350"). */
   const alloc = num(allocationThisCheckout);
   const docTotal = num(documentTotal);
@@ -1561,7 +1732,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         delivery_status: 'pending',
         notes: '',
       },
-      { syncLinked: false }
+      invoiceSaveOpts
     );
     return { invoice, orderId };
   }
@@ -1637,7 +1808,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         delivery_status: 'pending',
         notes: entry.notes,
       },
-      { syncLinked: false }
+      invoiceSaveOpts
     );
     return { invoice, orderId };
   }
@@ -1686,7 +1857,7 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
         delivery_status: 'pending',
         notes: entry.notes,
       },
-      { syncLinked: false }
+      invoiceSaveOpts
     );
     await saveOrder(
       {
@@ -1743,14 +1914,17 @@ async function persistCheckoutDocuments(ctx: PersistCtx): Promise<{ invoice: POS
       amount_paid: newPaid,
       status: invoiceStatus,
     },
-    { syncLinked: false }
+    invoiceSaveOpts
   );
-  orderId = entry.order_id ?? undefined;
+  const linkedOid = invoice?.order_id != null ? String(invoice.order_id).trim() : '';
+  orderId = linkedOid || (entry.order_id != null ? String(entry.order_id) : undefined);
   return { invoice, orderId };
 }
 
 const POSCheckout: React.FC<POSCheckoutProps> = ({
   source,
+  exchangeHandoff,
+  onExchangeHandoffConsumed,
   onDone,
   onBack,
   onCustomersRefresh,
@@ -1763,10 +1937,14 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
   const [quotes, setQuotes] = useState<POSQuote[]>([]);
   const [orders, setOrders] = useState<POSOrder[]>([]);
   const [invoices, setInvoices] = useState<POSInvoice[]>([]);
+  const [refunds, setRefunds] = useState<POSRefund[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const mainSearchInputRef = useRef<HTMLInputElement>(null);
+  const exchangeMainSearchFocusPendingRef = useRef(false);
+  const [exchangeIntroOpen, setExchangeIntroOpen] = useState(false);
 
   const [lineItems, setLineItems] = useState<CheckoutLineItem[]>([]);
   /** Prior line snapshots for Items “Undo” (each entry is the state before one user edit). */
@@ -1814,13 +1992,14 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
 
   useEffect(() => {
     (async () => {
-      const [prods, overrides, c, q, o, i] = await Promise.all([
+      const [prods, overrides, c, q, o, i, ref] = await Promise.all([
         fetchCustomProducts(),
         fetchProductOverrides(),
         fetchCustomers(),
         fetchQuotes(),
         fetchOrders(),
         fetchInvoices(),
+        fetchRefunds(),
       ]);
       const merged = prods.map((p) => {
         const ov = overrides[p.id];
@@ -1838,6 +2017,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       setQuotes(q);
       setOrders(o);
       setInvoices(i);
+      setRefunds(asPosRows(ref));
       setLoading(false);
     })();
   }, []);
@@ -2082,12 +2262,18 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
     };
     const notBlocked = (doc: POSQuote | POSOrder | POSInvoice) =>
       !checkoutSearchBlockedDocKeys.has(docEntryKey(doc));
+    const notRefundedStream = (doc: POSQuote | POSOrder | POSInvoice) =>
+      !checkoutDocumentExcludedDueToRefundedInvoice(doc, invoices, refunds);
     return {
-      quotes: quotesForSearch.filter(matchQuoteForDocSearch).filter(notBlocked).slice(0, 8),
-      orders: ordersForSearch.filter(match).filter(notBlocked).slice(0, 8),
-      invoices: openInvoices.filter(match).filter(notBlocked).slice(0, 8),
+      quotes: quotesForSearch
+        .filter(matchQuoteForDocSearch)
+        .filter(notBlocked)
+        .filter(notRefundedStream)
+        .slice(0, 8),
+      orders: ordersForSearch.filter(match).filter(notBlocked).filter(notRefundedStream).slice(0, 8),
+      invoices: openInvoices.filter(match).filter(notBlocked).filter(notRefundedStream).slice(0, 8),
     };
-  }, [searchQ, quotes, orders, invoices, checkoutSearchBlockedDocKeys]);
+  }, [searchQ, quotes, orders, invoices, checkoutSearchBlockedDocKeys, refunds]);
 
   /** Match by customer name or contact phone (Contact #). */
   const customerMatches = useMemo(() => {
@@ -2113,12 +2299,15 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       documentBelongsToMatchedCustomers(doc, customerMatches);
     const notBlocked = (doc: POSQuote | POSOrder | POSInvoice) =>
       !checkoutSearchBlockedDocKeys.has(docEntryKey(doc));
+    const notRefundedStream = (doc: POSQuote | POSOrder | POSInvoice) =>
+      !checkoutDocumentExcludedDueToRefundedInvoice(doc, invoices, refunds);
+    /** Full list for the search dropdown (every eligible doc, linked or standalone). Stream collapse applies only when clicking the customer name (see {@link collectCheckoutEligibleDocsForCustomer}). */
     return {
-      quotes: quotesForSearch.filter(belongs).filter(notBlocked).slice(0, 8),
-      orders: ordersForSearch.filter(belongs).filter(notBlocked).slice(0, 8),
-      invoices: openInvoices.filter(belongs).filter(notBlocked).slice(0, 8),
+      quotes: quotesForSearch.filter(belongs).filter(notBlocked).filter(notRefundedStream),
+      orders: ordersForSearch.filter(belongs).filter(notBlocked).filter(notRefundedStream),
+      invoices: openInvoices.filter(belongs).filter(notBlocked).filter(notRefundedStream),
     };
-  }, [customerMatches, quotes, orders, invoices, checkoutSearchBlockedDocKeys]);
+  }, [customerMatches, quotes, orders, invoices, checkoutSearchBlockedDocKeys, refunds]);
 
   /** Text-based doc hits, minus rows already listed under customer match (no duplicates). */
   const docMatchesExcludingCustomerDocs = useMemo(() => {
@@ -2375,7 +2564,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
         quotes,
         orders,
         invoices,
-        checkoutSearchBlockedDocKeys
+        checkoutSearchBlockedDocKeys,
+        refunds
       );
       const docsToAdd = [...qRows, ...oRows, ...iRows];
       if (docsToAdd.length > 0) {
@@ -2402,6 +2592,48 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       }
     }
   };
+
+  useEffect(() => {
+    if (exchangeHandoff?.customerId) {
+      setExchangeIntroOpen(true);
+      void onCustomersRefresh?.();
+    } else {
+      setExchangeIntroOpen(false);
+    }
+  }, [exchangeHandoff, onCustomersRefresh]);
+
+  const completeExchangeIntro = async () => {
+    let list = customers;
+    try {
+      await onCustomersRefresh?.();
+      list = await fetchCustomers();
+      setCustomers(list);
+    } catch {
+      /* ignore */
+    }
+    const id = exchangeHandoff?.customerId;
+    if (id) {
+      const c = list.find((x) => String(x.id) === String(id));
+      if (c) {
+        selectCustomerRow(c, { appendCheckoutLinesFromEligibleDocs: false });
+        setUseStoreCredit(true);
+        setSearchQuery('');
+        setShowSearch(true);
+        exchangeMainSearchFocusPendingRef.current = true;
+      }
+    }
+    setExchangeIntroOpen(false);
+    requestAnimationFrame(() => mainSearchInputRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (loading) return;
+    if (!exchangeMainSearchFocusPendingRef.current) return;
+    requestAnimationFrame(() => {
+      mainSearchInputRef.current?.focus();
+      exchangeMainSearchFocusPendingRef.current = false;
+    });
+  }, [loading, searchQuery, showSearch]);
 
   const clearCustomerSection = useCallback(() => {
     prevMatchedCustomerIdRef.current = null;
@@ -2516,6 +2748,13 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       const allocationThisCheckout = num(creditApplied) + num(tenderAmt);
       const overpayToStoreCredit = Math.max(0, allocationThisCheckout - safeAmountDue);
 
+      const onInvoicePersistWarning = (subtitle: string) =>
+        notify({
+          variant: 'warning',
+          title: 'Save completed — linked order issue',
+          subtitle,
+        });
+
       let persistResults: Array<{ invoice: POSInvoice | null; orderId?: string; streamAllocation?: number }> = [];
       let perStreamAllocations: number[] | null = null;
       let multiStreamSettlement: { streamTotals: number[]; perStreamAlloc: number[] } | null = null;
@@ -2565,6 +2804,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
             quotes,
             orders,
             invoices: invoicesForPersist,
+            onInvoicePersistWarning,
           });
           if (r.invoice?.id) {
             const saved = r.invoice;
@@ -2600,6 +2840,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
           quotes,
           orders,
           invoices: invoicesForPayment,
+          onInvoicePersistWarning,
         });
         persistResults = [{ ...r1, streamAllocation: allocationThisCheckout }];
       } else {
@@ -2620,6 +2861,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
           quotes,
           orders,
           invoices: invoicesForPayment,
+          onInvoicePersistWarning,
         });
         persistResults = [{ ...r2, streamAllocation: allocationThisCheckout }];
       }
@@ -2665,9 +2907,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       );
 
       const withInv = persistResults.filter((p) => p.invoice);
-      const receiptWeights = withInv.map((pr) => num(pr.invoice?.total ?? 0));
-      const creditParts = splitProportionally(creditApplied, receiptWeights);
-      const tenderParts = splitProportionally(tenderAmt, receiptWeights);
 
       const receiptPayMethod = buildSuggestedReceiptPaymentMethodLabel({
         tenderTotal: tenderAmt,
@@ -2740,92 +2979,33 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
           status: 'approved',
           payment_type: payType,
           amount_paid: allocationThisCheckout,
-          items: itemsPayload,
+          items: attachReceiptInvoiceLabelsToLineItems(itemsPayload, lineItems),
           total: combinedSettlementTotal,
+          subtotal,
+          tax_rate: gctPercentEffective,
+          tax_amount: taxAmount,
+          discount_amount: discountAmount,
           notes: '',
           invoice_links: mergedInvoiceLinks,
         });
 
-        const receiptSettlementInvoices = withInv.map((pr) => {
-          const inv = pr.invoice!;
-          const ord = pr.orderId ? orders.find((x) => String(x.id) === String(pr.orderId)) : undefined;
-          return {
-            invoiceNumber: inv.invoice_number,
-            documentTotal: num(inv.total),
-            amountAppliedThisReceipt: num(pr.streamAllocation ?? 0),
-            orderNumber: ord?.order_number,
-            customerName: inv.customer_name,
-            customerEmail: inv.customer_email,
-            customerPhone: inv.customer_phone,
-          };
+        const invoicesForReceiptPreview = invoicesMergedWithPersistResults(invoices, persistResults);
+        const printProps = buildReceiptPrintDocPropsForPreview(rec, customers, invoicesForReceiptPreview);
+        const receiptDocHtml = buildQuotationDocumentHtml(printProps, loadContactDetails(), {
+          mode: 'email',
+          companyName: 'Voltz Industrial Supply',
+          previewLayout: 'compact',
         });
-
-        const receiptLineInvoiceNumbers = receiptLineInvoiceNumbersFromCart(lineItems, quotes, orders, invoices);
-
-        const receiptDocHtml = buildQuotationDocumentHtml(
-          {
-            type: 'receipt',
-            docNumber: rec.receipt_number,
-            date: rec.created_at || new Date().toISOString(),
-            customerName: primaryInv.customer_name || customerName,
-            customerEmail: customerEmail.trim(),
-            customerPhone: primaryInv.customer_phone || customerPhone,
-            customerCompany: customerCompany,
-            customerAccountNo: primaryInv.customer_id || customerId,
-            items: itemsPayload,
-            subtotal,
-            taxRate: gctPercentEffective,
-            taxAmount,
-            discountAmount,
-            total: combinedSettlementTotal,
-            amountPaid: num(rec.amount_paid),
-            amountReceivedTender: tenderAmt,
-            paymentMethod: rec.payment_method,
-            notes: '',
-            status: rec.status || primaryInv.status,
-            receiptLineInvoiceNumbers,
-            receiptSettlementInvoices,
-          },
-          loadContactDetails(),
-          {
-            mode: 'email',
-            companyName: 'Voltz Industrial Supply',
-          }
-        );
         setReceiptPreviewHtml(buildQuotationPreviewSrcDoc(receiptDocHtml));
         setReceiptPreviewOpen(true);
 
-        const mailDoc: PrintDocProps = {
-          type: 'receipt',
-          docNumber: rec.receipt_number,
-          date: rec.created_at || new Date().toISOString(),
-          customerName: primaryInv.customer_name || customerName,
-          customerEmail: String(customerEmail || '').trim(),
-          customerPhone: primaryInv.customer_phone || customerPhone,
-          customerCompany: customerCompany,
-          customerAccountNo: primaryInv.customer_id || customerId,
-          items: itemsPayload,
-          subtotal,
-          taxRate: gctPercentEffective,
-          taxAmount,
-          discountAmount,
-          total: combinedSettlementTotal,
-          amountPaid: num(rec.amount_paid),
-          amountReceivedTender: tenderAmt,
-          paymentMethod: rec.payment_method,
-          notes: '',
-          status: rec.status || primaryInv.status,
-          receiptLineInvoiceNumbers,
-          receiptSettlementInvoices,
-        };
-        await sendReceiptEmail(rec, mailDoc);
+        await sendReceiptEmail(rec, printProps);
       } else {
         for (let ridx = 0; ridx < persistResults.length; ridx++) {
           const pr = persistResults[ridx];
           if (!pr.invoice) continue;
           const inv = pr.invoice!;
           const allocationForReceipt = num(pr.streamAllocation ?? (perStreamAllocations ? perStreamAllocations[ridx]! : allocationThisCheckout));
-          const tnPart = tenderParts[ridx] ?? 0;
           const owedBeforeCents = balanceDueBeforePaymentCents(inv, allocationForReceipt);
           const payType = receiptPaymentTypeFromReceivedVsCombinedBalanceCents(
             moneyToCents(allocationForReceipt),
@@ -2843,68 +3023,25 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
             amount_paid: allocationForReceipt,
             items: inv.items,
             total: inv.total,
+            subtotal: inv.subtotal,
+            tax_rate: inv.tax_rate,
+            tax_amount: inv.tax_amount,
+            discount_amount: inv.discount_amount,
             notes: '',
             invoice_links: [{ invoice_id: inv.id, amount_applied: allocationForReceipt }],
           });
 
-          const receiptLineItemsSingle = inv.items && inv.items.length > 0 ? inv.items : itemsPayload;
-          const receiptLineInvoiceNumbersSingle = receiptLineItemsSingle.map(() => String(inv.invoice_number || '').trim());
-
-          const receiptDocHtml = buildQuotationDocumentHtml(
-            {
-              type: 'receipt',
-              docNumber: rec.receipt_number,
-              date: rec.created_at || new Date().toISOString(),
-              customerName: inv.customer_name || customerName,
-              customerEmail: customerEmail.trim(),
-              customerPhone: inv.customer_phone || customerPhone,
-              customerCompany: customerCompany,
-              customerAccountNo: inv.customer_id || customerId,
-              items: receiptLineItemsSingle,
-              subtotal: num(inv.subtotal),
-              taxRate: num(inv.tax_rate),
-              taxAmount: num(inv.tax_amount),
-              discountAmount: num(inv.discount_amount),
-              total: num(inv.total),
-              amountPaid: num(rec.amount_paid),
-              amountReceivedTender: tnPart,
-              paymentMethod: rec.payment_method,
-              notes: '',
-              status: rec.status || inv.status,
-              receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
-            },
-            loadContactDetails(),
-            {
-              mode: 'email',
-              companyName: 'Voltz Industrial Supply',
-            }
-          );
+          const invoicesForReceiptPreview = invoicesMergedWithPersistResults(invoices, persistResults);
+          const printProps = buildReceiptPrintDocPropsForPreview(rec, customers, invoicesForReceiptPreview);
+          const receiptDocHtml = buildQuotationDocumentHtml(printProps, loadContactDetails(), {
+            mode: 'email',
+            companyName: 'Voltz Industrial Supply',
+            previewLayout: 'compact',
+          });
           setReceiptPreviewHtml(buildQuotationPreviewSrcDoc(receiptDocHtml));
           setReceiptPreviewOpen(true);
 
-          const mailDoc: PrintDocProps = {
-            type: 'receipt',
-            docNumber: rec.receipt_number,
-            date: rec.created_at || new Date().toISOString(),
-            customerName: inv.customer_name || customerName,
-            customerEmail: String(customerEmail || '').trim(),
-            customerPhone: inv.customer_phone || customerPhone,
-            customerCompany: customerCompany,
-            customerAccountNo: inv.customer_id || customerId,
-            items: receiptLineItemsSingle,
-            subtotal: num(inv.subtotal),
-            taxRate: num(inv.tax_rate),
-            taxAmount: num(inv.tax_amount),
-            discountAmount: num(inv.discount_amount),
-            total: num(inv.total),
-            amountPaid: num(rec.amount_paid),
-            amountReceivedTender: tnPart,
-            paymentMethod: rec.payment_method,
-            notes: '',
-            status: rec.status || inv.status,
-            receiptLineInvoiceNumbers: receiptLineInvoiceNumbersSingle,
-          };
-          await sendReceiptEmail(rec, mailDoc);
+          await sendReceiptEmail(rec, printProps);
         }
       }
 
@@ -3073,6 +3210,30 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
         </div>
       )}
 
+      <Dialog open={exchangeIntroOpen} onOpenChange={setExchangeIntroOpen}>
+        <DialogContent
+          className="sm:max-w-md"
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-[#1a2332]">Exchange — next step</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-gray-600">
+            Enter new items in the Checkout Center; a new invoice will be created for these items.
+          </p>
+          <DialogFooter>
+            <Button
+              type="button"
+              onClick={() => void completeExchangeIntro()}
+              className="bg-[#e31e24] hover:bg-[#c91a1f] text-white"
+            >
+              OK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="rounded-2xl bg-gradient-to-r from-[#1a2332] to-[#24344a] p-6 text-white">
         <div className="flex items-center gap-3">
           <button
@@ -3095,6 +3256,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
         <div className="relative flex-1 min-w-0">
           <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
+            ref={mainSearchInputRef}
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value);
@@ -3881,20 +4043,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
                 className={`w-full px-3 py-2 border border-gray-200 rounded-lg ${DECIMAL_INPUT_ZERO_PLACEHOLDER_CLASS}`}
               />
             )}
-            {useStoreCredit && hasStoreCreditWallet && creditAppliedPreview > 0 ? (
-              <div
-                className="mt-3 flex gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] text-sky-950"
-                role="status"
-              >
-                <Info className="w-4 h-4 shrink-0 text-sky-600 mt-0.5" aria-hidden />
-                <p className="m-0 leading-snug">
-                  <span className="font-semibold">Store credit:</span>{' '}
-                  {fmtMoney(creditAppliedPreview)} will be applied to this sale.{' '}
-                  <span className="font-semibold">{fmtMoney(storeCreditRemainingAfter)}</span> will remain for future
-                  purchases.
-                </p>
-              </div>
-            ) : null}
           </div>
 
           <div className="text-sm space-y-1">

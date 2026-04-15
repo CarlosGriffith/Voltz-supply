@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Plus, Minus, Trash2, User, UserPlus, Package, Printer, Send, ArrowLeft, CheckCircle, Mail, Phone, Building2, Globe, MessageSquare } from 'lucide-react';
+import { PosDocTitleFa } from '@/components/pos/posActionMenuIcons';
 import {
   safeNum,
   fmtCurrency,
@@ -654,9 +655,19 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
       };
 
       /** Persist document only; linked rows + quote-request status update on checkout (or explicit Save with sync). */
+      const onInvoicePersistWarning = (subtitle: string) =>
+        notify({
+          variant: 'warning',
+          title: 'Save completed — linked order issue',
+          subtitle,
+        });
       const saveOptsCheckout = forCheckout
-        ? ({ syncLinked: false, skipOrderGeneratedPromotion: true } as const)
-        : undefined;
+        ? ({
+            syncLinked: false,
+            skipOrderGeneratedPromotion: true,
+            onPersistWarning: onInvoicePersistWarning,
+          } as const)
+        : { onPersistWarning: onInvoicePersistWarning };
 
       let saved: any = null;
       if (type === 'quote') {
@@ -701,20 +712,35 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         );
       } else if (type === 'order') {
         const editO = editDoc as POSOrder | undefined;
-        const orderPipelineLocked: POSOrder['status'][] = [
+        /** Once an invoice exists, order status tracks invoice (Unpaid / Paid / Partially Paid / Refunded), not pre-invoice workflow. */
+        const orderInvoiceLocked: POSOrder['status'][] = [
           'invoice_generated_unpaid',
           'invoice_generated_partially_paid',
           'invoice_generated_paid',
           'processed',
+          'refunded',
         ];
+        const hasInvoiceId = editO?.invoice_id != null && String(editO.invoice_id).trim() !== '';
         let orderStatus: POSOrder['status'];
-        if (editO?.status && orderPipelineLocked.includes(editO.status)) {
+        if (editO?.status && orderInvoiceLocked.includes(editO.status)) {
           orderStatus = editO.status;
         } else if (forCheckout && editO?.status) {
           orderStatus = editO.status;
+        } else if (!hasInvoiceId) {
+          // Pre-invoice: Save & Print → Printed; plain Save preserves Reviewed / Printed / Emailed
+          if (andPrint) {
+            orderStatus = 'printed';
+          } else if (
+            editO?.status === 'reviewed' ||
+            editO?.status === 'printed' ||
+            editO?.status === 'emailed'
+          ) {
+            orderStatus = editO.status;
+          } else {
+            orderStatus = 'reviewed';
+          }
         } else {
-          // Plain Save → Reviewed; Save & Email sets emailed only after send succeeds (below).
-          orderStatus = 'reviewed';
+          orderStatus = editO?.status ?? 'invoice_generated_unpaid';
         }
         saved = await saveOrder(
           {
@@ -837,13 +863,14 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             );
           } else if (type === 'order' && saved) {
             const os = (saved as POSOrder).status;
-            const orderPipelineLocked: POSOrder['status'][] = [
+            const orderInvoiceLocked: POSOrder['status'][] = [
               'invoice_generated_unpaid',
               'invoice_generated_partially_paid',
               'invoice_generated_paid',
               'processed',
+              'refunded',
             ];
-            if (!orderPipelineLocked.includes(os)) {
+            if (!orderInvoiceLocked.includes(os)) {
               saved = await saveOrder({ ...(saved as POSOrder), status: 'emailed' }, { syncLinked: false });
             }
           }
@@ -996,22 +1023,25 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-xl font-bold tracking-tight text-[#1a2332]">
-            {editDoc ? (
-              <>
-                Review {typeLabel}
-                {recordNumber ? (
-                  <>
-                    :{' '}
-                    <span className="text-[18px] font-bold leading-snug text-[#1a2332] tabular-nums">
-                      {recordNumber}
-                    </span>
-                  </>
-                ) : null}
-              </>
-            ) : (
-              `Create ${typeLabel}`
-            )}
+          <h2 className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-[#1a2332]">
+            <PosDocTitleFa kind={type} mode={editDoc ? 'review' : 'create'} />
+            <span className="min-w-0">
+              {editDoc ? (
+                <>
+                  Review {typeLabel}
+                  {recordNumber ? (
+                    <>
+                      :{' '}
+                      <span className="text-[18px] font-bold leading-snug text-[#1a2332] tabular-nums">
+                        {recordNumber}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                `Create ${typeLabel}`
+              )}
+            </span>
           </h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">

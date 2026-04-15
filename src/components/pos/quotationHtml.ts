@@ -1,4 +1,5 @@
 import type { ContactDetails } from '@/contexts/CMSContext';
+import type { POSLineItem } from '@/lib/posData';
 import { fmtCurrency, fmtDatePOS, safeNum } from '@/lib/utils';
 import type { PrintDocProps } from './posPrintTypes';
 
@@ -42,6 +43,13 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** Canonical refund numbers are REF-*; normalize legacy RF-* rows for display. */
+export function displayRefundDocNumber(docNumber: string | undefined): string {
+  const s = String(docNumber ?? '').trim();
+  if (/^RF-/i.test(s)) return `REF-${s.slice(4)}`;
+  return s;
+}
+
 function typeTitle(t: PrintDocProps['type']): string {
   return { quote: 'QUOTATION', order: 'SALES ORDER', invoice: 'INVOICE', receipt: 'RECEIPT', refund: 'REFUND' }[t];
 }
@@ -51,13 +59,11 @@ function typeLabelShort(t: PrintDocProps['type']): string {
 }
 
 function lineTaxFlag(
-  item: PrintDocProps['items'][0],
-  docTaxAmount: number,
-  taxRate: number
+  _item: PrintDocProps['items'][0],
+  _docTaxAmount: number,
+  _taxRate: number
 ): 'T' | 'B' {
-  if (item.taxable === false) return 'B';
-  if (item.taxable === true) return 'T';
-  return docTaxAmount > 0 && taxRate > 0 ? 'T' : 'B';
+  return 'T';
 }
 
 function receiptDocLabelSortKey(label: string): [number, string] {
@@ -68,35 +74,60 @@ function receiptDocLabelSortKey(label: string): [number, string] {
   return [Number.MAX_SAFE_INTEGER, s.toLowerCase()];
 }
 
-function compareReceiptDocLabelsForSort(a: string, b: string): number {
+export function compareReceiptDocLabelsForSort(a: string, b: string): number {
   const ka = receiptDocLabelSortKey(a);
   const kb = receiptDocLabelSortKey(b);
   if (ka[0] !== kb[0]) return ka[0] - kb[0];
   return ka[1].localeCompare(kb[1]);
 }
 
-export function computeTaxableSplit(props: PrintDocProps): { taxable: number; nontaxable: number } {
-  const tr = safeNum(props.taxRate);
-  const ta = safeNum(props.taxAmount);
-  const sub = safeNum(props.subtotal);
-  const items = Array.isArray(props.items) ? props.items : [];
-  if (items.some(i => i.taxable === true || i.taxable === false)) {
-    let taxable = 0;
-    let nontaxable = 0;
-    for (const i of items) {
-      if (i.taxable === false) nontaxable += safeNum(i.total);
-      else taxable += safeNum(i.total);
+/**
+ * Invoice # shown in the Item # column for receipt/refund line grouping (receipt: props array; refund: per-line `source_invoice_number`).
+ */
+export function getEffectiveLineInvoiceLabel(
+  props: PrintDocProps,
+  item: POSLineItem,
+  rowIdx: number
+): string {
+  const lineItems = props.items;
+  const n = lineItems.length;
+  const fromProp = props.receiptLineInvoiceNumbers;
+  if (props.type === 'receipt') {
+    if (Array.isArray(fromProp) && fromProp.length === n) {
+      return String(fromProp[rowIdx] ?? '').trim();
     }
-    return { taxable, nontaxable };
+    return '';
   }
-  if (ta > 0 && tr > 0) return { taxable: sub, nontaxable: 0 };
-  return { taxable: 0, nontaxable: sub };
+  if (props.type === 'refund') {
+    if (Array.isArray(fromProp) && fromProp.length === n) {
+      return String(fromProp[rowIdx] ?? '').trim();
+    }
+    return String(item.source_invoice_number || '').trim();
+  }
+  return '';
+}
+
+export function computeTaxableSplit(props: PrintDocProps): { taxable: number; nontaxable: number } {
+  const sub = safeNum(props.subtotal);
+  return { taxable: sub, nontaxable: 0 };
+}
+
+function addressLines(addr: string | undefined): string[] {
+  if (!addr?.trim()) return [];
+  return addr
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function billBlock(p: PrintDocProps): string {
-  const lines = [p.customerName, p.customerCompany, p.customerEmail, p.customerPhone].filter(
-    (x) => x && String(x).trim()
-  );
+  const lines = [
+    p.customerName,
+    p.customerCompany,
+    ...addressLines(p.customerAddress),
+    p.customerEmail,
+    p.customerPhone,
+  ].filter((x) => x && String(x).trim());
   return lines.map((l) => esc(String(l))).join('<br/>');
 }
 
@@ -117,6 +148,8 @@ export function buildQuotationDocumentHtml(
   }
 ): string {
   const thinPdf = options.thinLinesForPdf === true;
+  const displayDocNumber =
+    props.type === 'refund' ? displayRefundDocNumber(props.docNumber) : props.docNumber;
   const previewCompact = !thinPdf && options.previewLayout === 'compact';
   /** Sent email HTML (`generateEmailHTML`) — not modal iframe (`previewLayout: 'compact'`) or PDF (`thinPdf`). */
   const isEmailBodyLineItems = !thinPdf && options.mode === 'email' && !previewCompact;
@@ -152,27 +185,20 @@ export function buildQuotationDocumentHtml(
   const ta = safeNum(props.taxAmount);
   const disc = safeNum(props.discountAmount);
   const isReceipt = props.type === 'receipt';
+  const isRefund = props.type === 'refund';
   const receiptSettlement = props.receiptSettlementInvoices;
   const showReceiptSettlement =
-    isReceipt && Array.isArray(receiptSettlement) && receiptSettlement.length > 1;
+    isReceipt && Array.isArray(receiptSettlement) && receiptSettlement.length > 0;
 
-  const receiptLineInv = props.receiptLineInvoiceNumbers;
+  const useLineInvoiceGrouping = isReceipt || props.type === 'refund';
   const receiptRowsOrdered = (() => {
     const pairs = lineItems.map((item, rowIdx) => {
-      const invLabel =
-        isReceipt &&
-        Array.isArray(receiptLineInv) &&
-        receiptLineInv.length === lineItems.length
-          ? String(receiptLineInv[rowIdx] ?? '').trim()
-          : '';
+      const invLabel = useLineInvoiceGrouping
+        ? getEffectiveLineInvoiceLabel(props, item as POSLineItem, rowIdx)
+        : '';
       return { item, invLabel };
     });
-    if (
-      isReceipt &&
-      Array.isArray(receiptLineInv) &&
-      receiptLineInv.length === lineItems.length &&
-      lineItems.length > 0
-    ) {
+    if (useLineInvoiceGrouping && lineItems.length > 0) {
       return [...pairs].sort((x, y) => compareReceiptDocLabelsForSort(x.invLabel, y.invLabel));
     }
     return pairs;
@@ -192,7 +218,18 @@ export function buildQuotationDocumentHtml(
           ? `<div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`
           : `<div style="line-height:1.25">${esc(cur)}:</div><div style="padding-left:12px;line-height:1.25">${esc(String(sku))}</div>`;
       const uom = item.uom?.trim() || 'EACH';
-      const desc = esc(item.product_name);
+      const srcInv =
+        props.type === 'refund'
+          ? String((item as POSLineItem).source_invoice_number || '').trim()
+          : '';
+      const desc =
+        props.type === 'refund'
+          ? cur !== ''
+            ? esc(item.product_name)
+            : srcInv !== ''
+              ? esc(`${srcInv} — ${item.product_name}`)
+              : esc(item.product_name)
+          : esc(item.product_name);
       const c = 'class="voltz-qdoc-lineitem-cell"';
       return `<tr>
         <td ${c} style="padding:5px 6px;font-size:9px">${itemNumInner}</td>
@@ -210,7 +247,7 @@ export function buildQuotationDocumentHtml(
 
   const outer =
     options.mode === 'print'
-      ? `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${esc(title)} ${esc(props.docNumber)}</title>`
+      ? `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${esc(title)} ${esc(displayDocNumber)}</title>`
       : '';
 
   const styles =
@@ -434,7 +471,7 @@ export function buildQuotationDocumentHtml(
         <table style="margin-left:auto;margin-top:6px;font-size:9px;color:#000">
           <tr><td style="text-align:right;padding:2px 8px">Date:</td><td style="text-align:left">${esc(quoteDateBar)}</td></tr>
           <tr><td style="text-align:right;padding:2px 8px">Page:</td><td style="text-align:left">Page 1 of 1</td></tr>
-          <tr><td style="text-align:right;padding:2px 8px">${esc(shortLabel)} #:</td><td style="text-align:left;font-weight:700">${esc(props.docNumber)}</td></tr>
+          <tr><td style="text-align:right;padding:2px 8px">${esc(shortLabel)} #:</td><td style="text-align:left;font-weight:700">${esc(displayDocNumber)}</td></tr>
           <tr><td style="text-align:right;padding:2px 8px;white-space:nowrap">Printed:</td><td style="text-align:left">${esc(printed)}</td></tr>
           ${props.taxRegistrationNo ? `<tr><td style="text-align:right;padding:2px 8px">GCT REG:</td><td style="text-align:left">${esc(props.taxRegistrationNo)}</td></tr>` : ''}
         </table>
@@ -528,36 +565,24 @@ export function buildQuotationDocumentHtml(
       <div style="margin-top:10px;font-size:8px;color:#000;line-height:1.45;opacity:0.9;padding:0 2px 0 0">
         <strong>Terms &amp; conditions</strong><br/>
         ${esc(termsDefault)}<br/><br/>
-        <strong>Legend:</strong> <strong>B</strong> = non-taxable line, <strong>T</strong> = taxable line (GCT).
+        <strong>Legend:</strong> <strong>T</strong> = taxable line (GCT).
       </div>
     </td>
     <td style="width:45%;vertical-align:top;padding:8px 0 0 0;box-sizing:border-box">
       <table style="width:100%;font-size:9px;border-collapse:collapse;table-layout:fixed;color:#000">
-        ${ta > 0 ? `<tr><td style="padding:3px 0;text-align:right">Taxable Subtotal:</td><td style="padding:3px 0;text-align:right;width:38%">${fmtCurrency(split.taxable)}</td></tr>` : ''}
-        ${split.nontaxable > 0 ? `<tr><td style="padding:3px 0;text-align:right">Non-taxable Subtotal:</td><td style="padding:3px 0;text-align:right">${fmtCurrency(split.nontaxable)}</td></tr>` : ''}
+        ${!isReceipt && ta > 0 ? `<tr><td style="padding:3px 0;text-align:right">Taxable Subtotal:</td><td style="padding:3px 0;text-align:right;width:38%">${fmtCurrency(split.taxable)}</td></tr>` : ''}
+        ${!isReceipt && split.nontaxable > 0 ? `<tr><td style="padding:3px 0;text-align:right">Non-taxable Subtotal:</td><td style="padding:3px 0;text-align:right">${fmtCurrency(split.nontaxable)}</td></tr>` : ''}
         <tr><td style="padding:3px 0;text-align:right;border-top:${bw} solid ${BD}"><strong>Subtotal</strong></td><td style="padding:3px 0;text-align:right;border-top:${bw} solid ${BD}"><strong>${fmtCurrency(props.subtotal)}</strong></td></tr>
-        ${ta > 0 ? `<tr><td style="padding:3px 0;text-align:right">Total GCT (${tr}%):</td><td style="padding:3px 0;text-align:right">${fmtCurrency(ta)}</td></tr>` : ''}
+        ${isReceipt || isRefund ? `<tr><td style="padding:3px 0;text-align:right">Total GCT:</td><td style="padding:3px 0;text-align:right">${fmtCurrency(ta)}</td></tr>` : ta > 0 ? `<tr><td style="padding:3px 0;text-align:right">Total GCT (${tr}%):</td><td style="padding:3px 0;text-align:right">${fmtCurrency(ta)}</td></tr>` : ''}
         ${disc > 0 ? `<tr><td style="padding:3px 0;text-align:right">Discount:</td><td style="padding:3px 0;text-align:right">-${fmtCurrency(disc)}</td></tr>` : ''}
         <tr><td style="padding:6px 0 3px;text-align:right;font-size:12px;font-weight:700;border-top:${bw} solid ${NAVY}"><strong>Total Amount</strong></td><td style="padding:6px 0 3px;text-align:right;font-size:12px;font-weight:700;border-top:${bw} solid ${NAVY}"><strong>$${fmtCurrency(props.total)}</strong></td></tr>
         ${
           showReceiptSettlement
             ? receiptSettlement!
-                .map((row, idx) => {
+                .map((row) => {
                   const invLabel = esc(String(row.invoiceNumber || 'Invoice'));
-                  const ord = row.orderNumber ? ` · Order ${esc(String(row.orderNumber))}` : '';
-                  const meta =
-                    idx > 0
-                      ? `<div style="font-size:8px;line-height:1.35;margin-top:4px;color:#000;opacity:0.95;text-align:right">${[
-                          row.customerName,
-                          row.customerEmail,
-                          row.customerPhone,
-                        ]
-                          .filter((x) => x && String(x).trim())
-                          .map((x) => esc(String(x).trim()))
-                          .join(' · ')}</div>`
-                      : '';
-                  return `<tr><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>${invLabel}</strong>${ord}<br/><span style="font-size:8px;font-weight:400">Document total</span></td><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>$${fmtCurrency(safeNum(row.documentTotal))}</strong>${meta}</td></tr>
-                  <tr><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">Applied on this receipt</td><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">$${fmtCurrency(safeNum(row.amountAppliedThisReceipt))}</td></tr>`;
+                  return `<tr><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>${invLabel} Total</strong></td><td style="padding:4px 0 0;text-align:right;font-size:9px;vertical-align:top"><strong>$${fmtCurrency(safeNum(row.documentTotal))}</strong></td></tr>
+                  <tr><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">Applied on this invoice</td><td style="padding:2px 0 4px;text-align:right;font-size:8px;border-bottom:${bw} solid ${BD_MUTED}">$${fmtCurrency(safeNum(row.amountAppliedThisReceipt))}</td></tr>`;
                 })
                 .join('')
             : ''

@@ -99,7 +99,8 @@ CREATE TABLE pos_quotes (
     'invoice_generated_unpaid',
     'invoice_generated_partially_paid',
     'invoice_generated_paid',
-    'processed'
+    'processed',
+    'refunded'
   )),
   CONSTRAINT fk_pos_quotes_customer FOREIGN KEY (`customer_id`) REFERENCES pos_customers (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -135,11 +136,14 @@ CREATE TABLE pos_orders (
     'completed',
     'cancelled',
     'reviewed',
+    'printed',
     'emailed',
     'invoice_generated_unpaid',
     'invoice_generated_partially_paid',
     'invoice_generated_paid',
-    'processed'
+    'processed',
+    'partially_refunded',
+    'refunded'
   )),
   CONSTRAINT fk_pos_orders_customer FOREIGN KEY (`customer_id`) REFERENCES pos_customers (`id`) ON DELETE SET NULL,
   CONSTRAINT fk_pos_orders_quote FOREIGN KEY (`quote_id`) REFERENCES pos_quotes (`id`) ON DELETE SET NULL
@@ -191,6 +195,10 @@ CREATE TABLE pos_receipts (
   `amount_paid` DECIMAL(12,2) NOT NULL DEFAULT 0,
   `items` LONGTEXT NOT NULL,
   `total` DECIMAL(12,2) NOT NULL DEFAULT 0,
+  `subtotal` DECIMAL(12,2) NULL DEFAULT NULL,
+  `tax_rate` DECIMAL(12,2) NULL DEFAULT NULL,
+  `tax_amount` DECIMAL(12,2) NULL DEFAULT NULL,
+  `discount_amount` DECIMAL(12,2) NULL DEFAULT NULL,
   `notes` TEXT,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY uq_pos_receipts_number (`receipt_number`),
@@ -216,6 +224,7 @@ CREATE TABLE pos_refunds (
   `id` VARCHAR(128) NOT NULL PRIMARY KEY,
   `refund_number` VARCHAR(64) NOT NULL,
   `invoice_id` VARCHAR(128) NULL,
+  `invoice_links` LONGTEXT NULL COMMENT 'JSON: per-invoice subtotals when one refund spans multiple invoices',
   `receipt_id` VARCHAR(128) NULL,
   `customer_id` VARCHAR(128) NULL,
   `customer_name` VARCHAR(512) NOT NULL DEFAULT '',
@@ -432,38 +441,42 @@ BEGIN
   DECLARE v_order_id VARCHAR(128);
   DECLARE v_quote_id VARCHAR(128);
   DECLARE v_q_status VARCHAR(64);
+  DECLARE v_existing_status VARCHAR(64);
   IF p_invoice_id IS NOT NULL THEN
-    SELECT COALESCE(total,0), order_id, quote_id
-      INTO v_total, v_order_id, v_quote_id
-    FROM pos_invoices WHERE id = p_invoice_id LIMIT 1;
+    SELECT COALESCE(total,0), order_id, quote_id, TRIM(status)
+      INTO v_total, v_order_id, v_quote_id, v_existing_status
+      FROM pos_invoices WHERE id = p_invoice_id LIMIT 1;
 
-    SELECT COALESCE(SUM(l.amount_applied), 0) INTO v_paid
-    FROM pos_receipt_invoice_links l
-    INNER JOIN pos_receipts r ON r.id = l.receipt_id AND r.status = 'approved'
-    WHERE l.invoice_id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci;
+    -- Refunds are applied in the app; receipt totals must not resurrect Paid over Refunded.
+    IF v_existing_status IS NULL OR LOWER(v_existing_status) <> 'refunded' THEN
+      SELECT COALESCE(SUM(l.amount_applied), 0) INTO v_paid
+      FROM pos_receipt_invoice_links l
+      INNER JOIN pos_receipts r ON r.id = l.receipt_id AND r.status = 'approved'
+      WHERE l.invoice_id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci;
 
-    IF v_paid <= 0 THEN SET v_status = 'Unpaid';
-    ELSEIF v_paid < v_total THEN SET v_status = 'Partially Paid';
-    ELSE SET v_status = 'Paid';
-    END IF;
+      IF v_paid <= 0 THEN SET v_status = 'Unpaid';
+      ELSEIF v_paid < v_total THEN SET v_status = 'Partially Paid';
+      ELSE SET v_status = 'Paid';
+      END IF;
 
-    IF v_status = 'Paid' THEN SET v_q_status = 'invoice_generated_paid';
-    ELSEIF v_status = 'Partially Paid' THEN SET v_q_status = 'invoice_generated_partially_paid';
-    ELSE SET v_q_status = 'invoice_generated_unpaid';
-    END IF;
+      IF v_status = 'Paid' THEN SET v_q_status = 'invoice_generated_paid';
+      ELSEIF v_status = 'Partially Paid' THEN SET v_q_status = 'invoice_generated_partially_paid';
+      ELSE SET v_q_status = 'invoice_generated_unpaid';
+      END IF;
 
-    UPDATE pos_invoices
-      SET amount_paid = v_paid, status = v_status, updated_at = CURRENT_TIMESTAMP(3)
-    WHERE id = p_invoice_id;
+      UPDATE pos_invoices
+        SET amount_paid = v_paid, status = v_status, updated_at = CURRENT_TIMESTAMP(3)
+        WHERE id = p_invoice_id;
 
-    IF v_order_id IS NOT NULL THEN
-      UPDATE pos_orders SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
-      WHERE id = v_order_id;
-    END IF;
+      IF v_order_id IS NOT NULL THEN
+        UPDATE pos_orders SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
+        WHERE id = v_order_id;
+      END IF;
 
-    IF v_quote_id IS NOT NULL THEN
-      UPDATE pos_quotes SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
-      WHERE id = v_quote_id;
+      IF v_quote_id IS NOT NULL THEN
+        UPDATE pos_quotes SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
+        WHERE id = v_quote_id;
+      END IF;
     END IF;
   END IF;
 END//
@@ -484,7 +497,17 @@ BEGIN
       GROUP BY l.invoice_id
     ) rp ON rp.invoice_id = i.id
     WHERE i.customer_id = p_customer_id
-      AND i.status IN ('Unpaid', 'Partially Paid');
+      AND i.status IN ('Unpaid', 'Partially Paid')
+      AND NOT EXISTS (
+        SELECT 1 FROM pos_refunds rf
+        WHERE rf.invoice_id COLLATE utf8mb4_unicode_ci = i.id COLLATE utf8mb4_unicode_ci
+           OR (
+             rf.invoice_links IS NOT NULL
+             AND TRIM(rf.invoice_links) NOT IN ('', 'null', '[]')
+             AND JSON_VALID(rf.invoice_links)
+             AND JSON_SEARCH(rf.invoice_links, 'one', i.id, NULL, '$[*].invoice_id') IS NOT NULL
+           )
+      );
 
     UPDATE pos_customers
     SET account_balance = GREATEST(v_bal, 0),

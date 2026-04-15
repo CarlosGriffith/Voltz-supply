@@ -45,7 +45,7 @@ function newLineRow(): ProductLine {
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `line-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  return { key, productName: '', quantity: '' };
+  return { key, productName: '', quantity: '1' };
 }
 
 // ─── Product Autocomplete Sub-Component ───

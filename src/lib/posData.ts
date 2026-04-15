@@ -1,5 +1,7 @@
 import { apiGet, apiPost, apiPatch, apiDelete, ensureArray } from '@/lib/api';
 import { isValidEmailFormatForForms, taxAmountFromSubtotalAndGctPercent } from '@/lib/utils';
+import { broadcastCMSUpdate } from '@/lib/cmsCache';
+import { fetchCustomProducts, updateProductStockCount } from '@/lib/cmsData';
 import { broadcastPOSChange, broadcastPOSCustomerRelatedTables } from '@/lib/posBroadcast';
 import { parseWebsiteQuoteRequestLines, categorySlugForWebsiteLine } from '@/lib/websiteQuoteRequestParse';
 
@@ -61,6 +63,10 @@ export interface POSCustomer {
 export interface POSLineItem {
   product_id: string;
   product_name: string;
+  /** Set when saving a POS receipt from checkout — primary INV- label for receipt body grouping. */
+  receipt_invoice_number?: string;
+  /** Refund lines: originating invoice # — used for print grouping (single- or multi-invoice refunds). */
+  source_invoice_number?: string;
   product_image?: string;
   part_number?: string;
   brand?: string;
@@ -83,7 +89,7 @@ export interface POSQuote {
   customer_phone: string;
   customer_company: string;
   source: 'walk-in' | 'website';
-  status: 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'reviewed' | 'printed' | 'emailed' | 'dormant' | 'order_generated' | 'invoice_generated_unpaid' | 'invoice_generated_partially_paid' | 'invoice_generated_paid' | 'processed';
+  status: 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'reviewed' | 'printed' | 'emailed' | 'dormant' | 'order_generated' | 'invoice_generated_unpaid' | 'invoice_generated_partially_paid' | 'invoice_generated_paid' | 'processed' | 'refunded';
   /** Set when status is `dormant`; previous workflow status for restore (server-maintained). */
   status_before_dormant?: string | null;
   items: POSLineItem[];
@@ -141,11 +147,14 @@ export interface POSOrder {
     | 'completed'
     | 'cancelled'
     | 'reviewed'
+    | 'printed'
     | 'emailed'
     | 'invoice_generated_unpaid'
     | 'invoice_generated_partially_paid'
     | 'invoice_generated_paid'
-    | 'processed';
+    | 'processed'
+    | 'partially_refunded'
+    | 'refunded';
   items: POSLineItem[];
   subtotal: number;
   tax_rate: number;
@@ -227,16 +236,17 @@ export function invoiceIsFullyPaid(inv: POSInvoice | null | undefined): boolean 
   return paid >= total - 0.005;
 }
 
-/** True when staff can record a refund (paid balance on file and not already fully refunded). */
+/**
+ * True when staff can open Refund from list Actions.
+ * Business rule: only fully Paid invoices can be refunded from Invoices/Receipts lists.
+ */
 export function invoiceCanProcessRefund(inv: POSInvoice | null | undefined): boolean {
   if (!inv) return false;
-  if (normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED) return false;
+  const st = normalizeInvoiceStatus(inv.status);
+  if (st !== INVOICE_STATUS_PAID) return false;
   const paid = Number(inv.amount_paid) || 0;
   if (paid <= 0.005) return false;
-  const st = normalizeInvoiceStatus(inv.status);
-  if (st === INVOICE_STATUS_PAID) return true;
-  const total = Number(inv.total) || 0;
-  return paid >= total - 0.005;
+  return true;
 }
 
 /** Prefer the most recent receipt tied to an invoice for refund audit linkage. */
@@ -280,16 +290,32 @@ export interface POSReceipt {
   amount_paid: number;
   items: POSLineItem[];
   total: number;
+  /** Checkout footer snapshot (matches POS Checkout subtotal / GCT / discount at payment time). */
+  subtotal?: number | null;
+  tax_rate?: number | null;
+  tax_amount?: number | null;
+  discount_amount?: number | null;
   notes: string;
   created_at: string;
   /** When set, persisted in `pos_receipt_invoice_links` (one receipt can settle multiple invoices). */
   invoice_links?: POSReceiptInvoiceLink[];
 }
 
+/** Per-invoice slice when one refund row covers multiple invoices (receipt flow). */
+export interface POSRefundInvoiceLink {
+  invoice_id: string;
+  invoice_number?: string;
+  subtotal: number;
+  tax_amount: number;
+  total: number;
+}
+
 export interface POSRefund {
   id: string;
   refund_number: string;
   invoice_id?: string;
+  /** Populated when one refund spans multiple invoices; `invoice_id` is null in that case. */
+  invoice_links?: POSRefundInvoiceLink[];
   receipt_id?: string;
   customer_id?: string;
   customer_name: string;
@@ -304,6 +330,166 @@ export interface POSRefund {
   notes: string;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Refunds that apply to this invoice (single-invoice refund or multi-invoice `invoice_links`).
+ */
+export function refundsTouchingInvoice(inv: POSInvoice, refunds: POSRefund[]): POSRefund[] {
+  const id = String(inv.id).trim();
+  if (!id) return [];
+  const out: POSRefund[] = [];
+  for (const r of refunds) {
+    if (r.invoice_id != null && String(r.invoice_id).trim() === id) {
+      out.push(r);
+      continue;
+    }
+    const links = r.invoice_links;
+    if (Array.isArray(links) && links.some((l) => l?.invoice_id && String(l.invoice_id).trim() === id)) {
+      out.push(r);
+    }
+  }
+  return out.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+}
+
+/** Match refund line to invoice line when allocating refunded units (FIFO across duplicate SKUs). */
+function linesMatchForRefundAllocation(invLi: POSLineItem, refLi: POSLineItem): boolean {
+  const pa = Number(invLi.unit_price) || 0;
+  const pb = Number(refLi.unit_price) || 0;
+  if (Math.abs(pa - pb) > 0.02) return false;
+  const ida = String(invLi.product_id || '').trim();
+  const idb = String(refLi.product_id || '').trim();
+  if (ida && idb) return ida === idb;
+  return String(invLi.product_name || '').trim() === String(refLi.product_name || '').trim();
+}
+
+/**
+ * Per invoice line index: how many units were already refunded on prior REF rows for this invoice.
+ * Refund payloads store only lines with quantity greater than 0; allocation is oldest-refund first, FIFO by line index
+ * when product_id (or name) + unit_price match.
+ */
+function invoiceRefundedQuantitiesByLineIndex(inv: POSInvoice, refunds: POSRefund[]): number[] {
+  const items = ensureArray(inv.items) as POSLineItem[];
+  const n = items.length;
+  const refunded = new Array<number>(n).fill(0);
+  const touching = refundsTouchingInvoice(inv, refunds)
+    .slice()
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  for (const rf of touching) {
+    const rlines = ensureArray(rf.items) as POSLineItem[];
+    if (rlines.length === n && n > 0) {
+      let aligned = true;
+      for (let i = 0; i < n; i++) {
+        if (!linesMatchForRefundAllocation(items[i], rlines[i])) {
+          aligned = false;
+          break;
+        }
+      }
+      if (aligned) {
+        for (let i = 0; i < n; i++) {
+          refunded[i] += Math.max(0, Math.floor(Number(rlines[i].quantity) || 0));
+        }
+        continue;
+      }
+    }
+    for (const rl of rlines) {
+      let q = Math.max(0, Math.floor(Number(rl.quantity) || 0));
+      if (q <= 0) continue;
+      for (let idx = 0; idx < n && q > 0; idx++) {
+        if (!linesMatchForRefundAllocation(items[idx], rl)) continue;
+        const orig = Math.max(0, Math.floor(Number(items[idx].quantity) || 0));
+        const already = refunded[idx];
+        const still = orig - already;
+        if (still <= 0) continue;
+        const apply = Math.min(q, still);
+        refunded[idx] += apply;
+        q -= apply;
+      }
+    }
+  }
+  return refunded;
+}
+
+/**
+ * Clone of invoice line items with `quantity` / `total` set to what is still refundable (original invoice
+ * quantities minus prior refunds touching this invoice). Use to seed the Process Refund modal.
+ */
+export function invoiceLineItemsRemainingForRefund(inv: POSInvoice, refunds: POSRefund[]): POSLineItem[] {
+  const items = ensureArray(inv.items) as POSLineItem[];
+  const refundedByIdx = invoiceRefundedQuantitiesByLineIndex(inv, refunds);
+  return items.map((item, idx) => {
+    const orig = Math.max(0, Math.floor(Number(item.quantity) || 0));
+    const rfd = Math.min(orig, Math.max(0, Math.floor(refundedByIdx[idx] || 0)));
+    const rem = Math.max(0, orig - rfd);
+    const up = Number(item.unit_price) || 0;
+    return { ...item, quantity: rem, total: rem * up };
+  });
+}
+
+/** Same condition as the Invoices list “Partially Refunded” badge: Paid / Partially Paid plus refund activity. */
+export function invoiceListShowsPartiallyRefunded(inv: POSInvoice, refunds: POSRefund[]): boolean {
+  const ns = normalizeInvoiceStatus(inv.status);
+  if (ns !== INVOICE_STATUS_PAID && ns !== INVOICE_STATUS_PARTIALLY_PAID) return false;
+  return refundsTouchingInvoice(inv, refunds).length > 0;
+}
+
+/**
+ * Omit from POS Checkout document search when the invoice is Refunded or Partially Refunded (invoices list sense).
+ */
+export function invoiceExcludedFromCheckoutDocumentSearch(
+  inv: POSInvoice | null | undefined,
+  refunds: POSRefund[]
+): boolean {
+  if (!inv) return false;
+  if (normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED) return true;
+  return invoiceListShowsPartiallyRefunded(inv, refunds);
+}
+
+/** Invoice rows tied to a quote or order (`invoice_id` and/or `quote_id` / `order_id` back-links). */
+export function linkedInvoicesForQuoteOrOrder(doc: POSQuote | POSOrder, invoices: POSInvoice[]): POSInvoice[] {
+  const out: POSInvoice[] = [];
+  const seen = new Set<string>();
+  const add = (inv: POSInvoice | undefined) => {
+    if (!inv?.id) return;
+    const id = String(inv.id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push(inv);
+  };
+  if ('quote_number' in doc) {
+    const q = doc;
+    if (q.invoice_id) add(invoices.find((i) => String(i.id) === String(q.invoice_id)));
+    for (const inv of invoices) {
+      if (inv.quote_id != null && String(inv.quote_id) === String(q.id)) add(inv);
+    }
+  } else {
+    const o = doc;
+    if (o.invoice_id) add(invoices.find((i) => String(i.id) === String(o.invoice_id)));
+    for (const inv of invoices) {
+      if (inv.order_id != null && String(inv.order_id) === String(o.id)) add(inv);
+    }
+  }
+  return out;
+}
+
+/** True when this quote, order, or invoice row should not appear in checkout search / customer-append. */
+export function checkoutDocumentExcludedDueToRefundedInvoice(
+  doc: POSQuote | POSOrder | POSInvoice,
+  invoices: POSInvoice[],
+  refunds: POSRefund[]
+): boolean {
+  if ('invoice_number' in doc) {
+    return invoiceExcludedFromCheckoutDocumentSearch(doc as POSInvoice, refunds);
+  }
+  return linkedInvoicesForQuoteOrOrder(doc as POSQuote | POSOrder, invoices).some((inv) =>
+    invoiceExcludedFromCheckoutDocumentSearch(inv, refunds)
+  );
+}
+
+/** Orders list / Actions: block checkout when the order is refund-derived or any linked invoice is refunded / partially refunded. */
+export function posOrderCheckoutBlocked(o: POSOrder, invoices: POSInvoice[], refunds: POSRefund[]): boolean {
+  if (o.status === 'refunded' || o.status === 'partially_refunded') return true;
+  return checkoutDocumentExcludedDueToRefundedInvoice(o, invoices, refunds);
 }
 
 export interface POSSentEmail {
@@ -453,6 +639,10 @@ export async function deleteCustomer(id: string): Promise<boolean> {
   }
 }
 
+/**
+ * Sets CRM **store credit** only (`pos_customers.store_credit`). Does not change **balance due**
+ * (`account_balance`). Store-credit / exchange refunds add to store credit via this helper; that is separate from AR balance.
+ */
 export async function updateCustomerStoreCredit(id: string, amount: number): Promise<boolean> {
   try {
     await apiPatch(`/api/pos/customers/${encodeURIComponent(id)}/store-credit`, { amount });
@@ -518,6 +708,13 @@ export type POSSaveOptions = {
    * Used for Save & Checkout before checkout completes so list status stays unchanged until checkout runs.
    */
   skipOrderGeneratedPromotion?: boolean;
+  /** Server may attach `_order_sync_error` when the invoice saved but linked POS order steps failed — show and retry. */
+  onPersistWarning?: (message: string) => void;
+  /**
+   * Merged into refund lookups when syncing linked order status (avoids relying on GET /refunds immediately
+   * after POST /refunds in the same flow).
+   */
+  refundsHint?: POSRefund[] | null;
 };
 
 function buildQuoteRequestProductSummary(items: POSLineItem[], fallbackProduct: string): string {
@@ -580,6 +777,7 @@ function commercialFromInvoice(inv: POSInvoice) {
 /** Align linked quote/order list status with invoice payment state. */
 export function linkedDocStatusFromInvoice(inv: POSInvoice): string | undefined {
   const s = normalizeInvoiceStatus(inv.status);
+  if (s === INVOICE_STATUS_REFUNDED) return 'refunded';
   if (s === INVOICE_STATUS_PAID) return 'invoice_generated_paid';
   if (s === INVOICE_STATUS_PARTIALLY_PAID) return 'invoice_generated_partially_paid';
   if (s === INVOICE_STATUS_UNPAID) return 'invoice_generated_unpaid';
@@ -598,7 +796,8 @@ function mergeQuoteRequestStatusFromQuote(qr: POSQuoteRequest, saved: POSQuote):
   if (
     s === 'order_generated' ||
     s.startsWith('invoice_generated') ||
-    s === 'processed'
+    s === 'processed' ||
+    s === 'refunded'
   )
     return 'quoted';
   return 'quoted';
@@ -741,26 +940,52 @@ async function syncLinkedFromSavedOrder(saved: POSOrder): Promise<void> {
   }
 }
 
-async function syncLinkedFromSavedInvoice(saved: POSInvoice): Promise<void> {
+async function syncLinkedFromSavedInvoice(saved: POSInvoice, syncOpts?: POSSaveOptions): Promise<void> {
   const comm = commercialFromInvoice(saved);
-  const oid = saved.order_id;
-  if (oid) {
-    const orders = await fetchOrders();
-    const o = orders.find((x) => x.id === oid);
-    if (o) {
-      await saveOrder(
-        {
-          ...o,
-          ...comm,
-          customer_type: saved.customer_id ? 'registered' : 'visitor',
-          order_number: o.order_number,
-          quote_id: o.quote_id,
-          invoice_id: o.invoice_id ?? saved.id,
-          status: linkedDocStatusFromInvoice(saved) ?? o.status,
-        },
-        { syncLinked: false }
-      );
+  const oid =
+    saved.order_id != null && String(saved.order_id).trim() !== '' ? String(saved.order_id).trim() : '';
+
+  const pickOrder = (orderRows: POSOrder[]): POSOrder | undefined => {
+    if (oid) {
+      const byOid = orderRows.find((x) => String(x.id) === oid);
+      if (byOid) return byOid;
     }
+    if (saved.id) {
+      return orderRows.find((x) => x.invoice_id != null && String(x.invoice_id) === String(saved.id));
+    }
+    return undefined;
+  };
+
+  let orders = await fetchOrders();
+  let o = pickOrder(orders);
+  if (!o && (oid || saved.id)) {
+    orders = await fetchOrders({ bustCache: true });
+    o = pickOrder(orders);
+  }
+
+  let refundMirrored: 'refunded' | 'partially_refunded' | null = null;
+  try {
+    refundMirrored = await resolveRefundMirroredOrderStatus(saved, syncOpts?.refundsHint);
+  } catch {
+    refundMirrored = null;
+  }
+  const fromInv = linkedDocStatusFromInvoice(saved);
+  const orderStatusForSave = refundMirrored ?? fromInv;
+  const resolvedOrderId = o?.id ?? (oid || null);
+
+  if (o) {
+    await saveOrder(
+      {
+        ...o,
+        ...comm,
+        customer_type: saved.customer_id ? 'registered' : 'visitor',
+        order_number: o.order_number,
+        quote_id: o.quote_id,
+        invoice_id: o.invoice_id ?? saved.id,
+        status: orderStatusForSave ?? o.status,
+      },
+      { syncLinked: false }
+    );
   }
 
   const qid = (saved as POSInvoice & { quote_id?: string | null }).quote_id;
@@ -778,7 +1003,7 @@ async function syncLinkedFromSavedInvoice(saved: POSInvoice): Promise<void> {
           status: linkedDocStatusFromInvoice(saved) ?? q.status,
           valid_until: q.valid_until,
           website_request_id: q.website_request_id,
-          order_id: q.order_id ?? oid ?? null,
+          order_id: q.order_id ?? resolvedOrderId,
           invoice_id: (q as POSQuote & { invoice_id?: string | null }).invoice_id ?? saved.id,
           email_sent_at: q.email_sent_at ?? null,
         },
@@ -793,7 +1018,7 @@ async function syncLinkedFromSavedInvoice(saved: POSInvoice): Promise<void> {
  * Call after batch saves that used `{ syncLinked: false }` (e.g. POS checkout).
  */
 export async function propagateInvoiceToLinkedRecords(invoice: POSInvoice): Promise<void> {
-  await syncLinkedFromSavedInvoice(invoice);
+  await syncLinkedFromSavedInvoice(invoice, undefined);
 }
 
 async function syncLinkedFromSavedQuoteRequest(qr: POSQuoteRequest): Promise<void> {
@@ -961,9 +1186,10 @@ export async function saveQuote(q: Partial<POSQuote>, opts?: POSSaveOptions): Pr
   return out;
 }
 
-export async function fetchOrders(): Promise<POSOrder[]> {
+export async function fetchOrders(opts?: { bustCache?: boolean }): Promise<POSOrder[]> {
   try {
-    const data = await apiGet<unknown>('/api/pos/orders');
+    const q = opts?.bustCache ? `?_=${Date.now()}` : '';
+    const data = await apiGet<unknown>(`/api/pos/orders${q}`);
     return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
@@ -1063,12 +1289,20 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
     notes: inv.notes || '',
     paid_at: inv.paid_at || null, delivered_at: inv.delivered_at || null,
   });
-  assertSavedRow(data, 'invoice');
+  const raw = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+  const warn =
+    typeof raw._order_sync_error === 'string' && raw._order_sync_error.trim() !== ''
+      ? raw._order_sync_error.trim()
+      : '';
+  const { _order_sync_error: _orderSyncErrStripped, ...rest } = raw;
+  void _orderSyncErrStripped;
+  assertSavedRow(rest, 'invoice');
+  if (warn && opts?.onPersistWarning) opts.onPersistWarning(warn);
   broadcastPOSChange('pos_invoices');
-  const out = { ...data, items: sanitizeItems(data.items), status: normalizeInvoiceStatus(data.status) };
+  const out = { ...rest, items: sanitizeItems(rest.items), status: normalizeInvoiceStatus(String(rest.status)) };
   if (opts?.syncLinked !== false) {
     try {
-      await syncLinkedFromSavedInvoice(out);
+      await syncLinkedFromSavedInvoice(out, opts);
     } catch (e) {
       console.error('syncLinkedFromSavedInvoice', e);
     }
@@ -1119,6 +1353,10 @@ export async function fetchReceipts(): Promise<POSReceipt[]> {
       items: sanitizeItems(r.items),
       amount_paid: Number(r.amount_paid) || 0,
       total: Number(r.total) || 0,
+      subtotal: r.subtotal != null && r.subtotal !== '' ? Number(r.subtotal) : null,
+      tax_rate: r.tax_rate != null && r.tax_rate !== '' ? Number(r.tax_rate) : null,
+      tax_amount: r.tax_amount != null && r.tax_amount !== '' ? Number(r.tax_amount) : null,
+      discount_amount: r.discount_amount != null && r.discount_amount !== '' ? Number(r.discount_amount) : null,
       invoice_links: normalizeReceiptInvoiceLinks(r.invoice_links),
     }));
   } catch (e) {
@@ -1140,6 +1378,10 @@ export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt>
     amount_paid: rec.amount_paid || 0,
     items: rec.items || [],
     total: rec.total || 0,
+    subtotal: rec.subtotal != null ? Number(rec.subtotal) : null,
+    tax_rate: rec.tax_rate != null ? Number(rec.tax_rate) : null,
+    tax_amount: rec.tax_amount != null ? Number(rec.tax_amount) : null,
+    discount_amount: rec.discount_amount != null ? Number(rec.discount_amount) : null,
     notes: rec.notes || '',
     created_at:
       rec.created_at || new Date().toISOString().replace('T', ' ').replace('Z', '').slice(0, 23),
@@ -1166,6 +1408,177 @@ export async function saveReceipt(rec: Partial<POSReceipt>): Promise<POSReceipt>
   }
 }
 
+function roundMoneyReceipt(n: number): number {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/** Invoice ids tied to a receipt (primary `invoice_id` + `invoice_links`). */
+export function receiptLinkedInvoiceIds(rec: POSReceipt): Set<string> {
+  const s = new Set<string>();
+  if (rec.invoice_id) s.add(String(rec.invoice_id).trim());
+  for (const l of rec.invoice_links || []) {
+    const id = String(l?.invoice_id ?? '').trim();
+    if (id) s.add(id);
+  }
+  return s;
+}
+
+function invoicesLinkedToReceipt(rec: POSReceipt, allInvoices: POSInvoice[]): POSInvoice[] {
+  const ids = receiptLinkedInvoiceIds(rec);
+  return allInvoices.filter((inv) => ids.has(String(inv.id).trim()));
+}
+
+/** Refund row references this receipt or any invoice the receipt settles. */
+export function refundTouchesReceiptRow(rec: POSRefund, receipt: POSReceipt): boolean {
+  if (rec.receipt_id && String(rec.receipt_id) === String(receipt.id)) return true;
+  const ids = receiptLinkedInvoiceIds(receipt);
+  if (rec.invoice_id && ids.has(String(rec.invoice_id))) return true;
+  return (rec.invoice_links || []).some((l) => ids.has(String(l.invoice_id)));
+}
+
+/**
+ * Receipts list badge: derived "Refunded" / "Partially Refunded" from linked invoices + refund rows
+ * (DB `status` stays `approved` / `pending_approval` for constraints).
+ */
+export function receiptTableDisplayStatus(
+  rec: POSReceipt,
+  invoices: POSInvoice[],
+  refunds: POSRefund[]
+): string {
+  const base = rec.status || '';
+  const linkedInvs = invoicesLinkedToReceipt(rec, invoices);
+  if (linkedInvs.length === 0) return base;
+
+  const allRefunded =
+    linkedInvs.length > 0 &&
+    linkedInvs.every((inv) => normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED);
+
+  const relevantRefunds = refunds.filter((rf) => refundTouchesReceiptRow(rf, rec));
+
+  if (allRefunded) return 'Refunded';
+
+  if (relevantRefunds.length > 0) return 'Partially Refunded';
+
+  const anyInvRefunded = linkedInvs.some(
+    (inv) => normalizeInvoiceStatus(inv.status) === INVOICE_STATUS_REFUNDED
+  );
+  if (anyInvRefunded) return 'Partially Refunded';
+
+  return base;
+}
+
+function effectiveReceiptInvoiceLinksForEdit(rec: POSReceipt): POSReceiptInvoiceLink[] {
+  const links = [...(rec.invoice_links || [])].map((l) => ({
+    invoice_id: String(l.invoice_id || '').trim(),
+    amount_applied: Number(l.amount_applied) || 0,
+    ...(l.invoice_number ? { invoice_number: l.invoice_number } : {}),
+  }));
+  if (links.length === 0 && rec.invoice_id) {
+    links.push({
+      invoice_id: String(rec.invoice_id).trim(),
+      amount_applied: Number(rec.amount_paid) || 0,
+    });
+  }
+  return links.filter((l) => l.invoice_id);
+}
+
+function receiptHasLinkToInvoiceId(rec: POSReceipt, invoiceId: string): boolean {
+  if (String(rec.invoice_id || '') === String(invoiceId)) return true;
+  return (rec.invoice_links || []).some((l) => String(l.invoice_id) === String(invoiceId));
+}
+
+/**
+ * After a refund, reduce `pos_receipt_invoice_links.amount_applied` and matching `amount_paid` on the receipt.
+ * With explicit `receiptId`, only that receipt is adjusted; otherwise newest receipts first (per invoice).
+ */
+export async function adjustReceiptAllocationsAfterRefund(params: {
+  receiptId?: string | null;
+  segments: { invoiceId: string; refundTotal: number }[];
+}): Promise<void> {
+  const segments = params.segments
+    .map((s) => ({
+      invoiceId: String(s.invoiceId || '').trim(),
+      refundTotal: roundMoneyReceipt(s.refundTotal),
+    }))
+    .filter((s) => s.invoiceId && s.refundTotal > 0);
+  if (segments.length === 0) return;
+
+  const applyToReceipt = async (rec: POSReceipt, invoiceId: string, maxDec: number): Promise<number> => {
+    maxDec = roundMoneyReceipt(maxDec);
+    if (maxDec <= 0) return 0;
+    let links = effectiveReceiptInvoiceLinksForEdit(rec);
+    const idx = links.findIndex((l) => String(l.invoice_id) === String(invoiceId));
+    if (idx < 0) return 0;
+    const applied = roundMoneyReceipt(links[idx].amount_applied);
+    const delta = roundMoneyReceipt(Math.min(maxDec, applied));
+    if (delta <= 0) return 0;
+    links[idx] = { ...links[idx], amount_applied: roundMoneyReceipt(applied - delta) };
+    const ap = roundMoneyReceipt(Number(rec.amount_paid) || 0);
+    const newPaid = Math.max(0, roundMoneyReceipt(ap - delta));
+    await saveReceipt({
+      ...rec,
+      amount_paid: newPaid,
+      invoice_links: links,
+    });
+    return delta;
+  };
+
+  let receipts = await fetchReceipts();
+
+  if (params.receiptId) {
+    for (const seg of segments) {
+      receipts = await fetchReceipts();
+      const target = receipts.find((r) => String(r.id) === String(params.receiptId));
+      if (!target) return;
+      await applyToReceipt(target, seg.invoiceId, seg.refundTotal);
+    }
+    return;
+  }
+
+  for (const seg of segments) {
+    let remaining = seg.refundTotal;
+    const candidates = receipts
+      .filter((r) => receiptHasLinkToInvoiceId(r, seg.invoiceId))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    for (const rec of candidates) {
+      if (remaining <= 0) break;
+      const took = await applyToReceipt(rec, seg.invoiceId, remaining);
+      remaining = roundMoneyReceipt(remaining - took);
+      receipts = await fetchReceipts();
+    }
+  }
+}
+
+function normalizeRefundInvoiceLinks(raw: unknown): POSRefundInvoiceLink[] | undefined {
+  if (raw == null || raw === '') return undefined;
+  let arr: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!Array.isArray(arr)) return undefined;
+  return arr
+    .map((row) => {
+      const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+      const iid = o.invoice_id != null ? String(o.invoice_id).trim() : '';
+      if (!iid) return null;
+      return {
+        invoice_id: iid,
+        invoice_number:
+          o.invoice_number != null && String(o.invoice_number).trim() !== ''
+            ? String(o.invoice_number).trim()
+            : undefined,
+        subtotal: Number(o.subtotal) || 0,
+        tax_amount: Number(o.tax_amount) || 0,
+        total: Number(o.total) || 0,
+      } as POSRefundInvoiceLink;
+    })
+    .filter((x): x is POSRefundInvoiceLink => x != null);
+}
+
 export async function fetchRefunds(): Promise<POSRefund[]> {
   try {
     const data = await apiGet<unknown>('/api/pos/refunds');
@@ -1174,11 +1587,47 @@ export async function fetchRefunds(): Promise<POSRefund[]> {
       items: sanitizeItems(r.items),
       subtotal: Number(r.subtotal) || 0, tax_amount: Number(r.tax_amount) || 0, total: Number(r.total) || 0,
       store_credit_amount: Number(r.store_credit_amount) || 0,
+      invoice_links: normalizeRefundInvoiceLinks(r.invoice_links),
     }));
   } catch (e) {
     console.error('fetchRefunds:', e);
     return [];
   }
+}
+
+/** Merge freshly saved refund row(s) with GET /refunds so the same browser flow sees the new row even if the list lags. */
+export function mergeRefundsLists(fetched: POSRefund[], hint?: POSRefund[] | null): POSRefund[] {
+  if (!hint || hint.length === 0) return fetched;
+  const byId = new Map<string, POSRefund>();
+  for (const r of fetched) {
+    if (r?.id) byId.set(String(r.id), r);
+  }
+  for (const r of hint) {
+    if (r?.id) byId.set(String(r.id), r);
+    else if (r?.invoice_id) byId.set(`__inv:${String(r.invoice_id)}`, r);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Order list status override when the invoice is refunded or “Partially Refunded” in the invoices-list sense.
+ * When `null`, use {@link linkedDocStatusFromInvoice} for payment state only.
+ */
+export async function resolveRefundMirroredOrderStatus(
+  inv: POSInvoice,
+  refundsHint?: POSRefund[] | null
+): Promise<'refunded' | 'partially_refunded' | null> {
+  let refunds: POSRefund[];
+  try {
+    refunds = await fetchRefunds();
+  } catch {
+    refunds = [];
+  }
+  refunds = mergeRefundsLists(refunds, refundsHint ?? undefined);
+  const invNorm = normalizeInvoiceStatus(inv.status);
+  if (invNorm === INVOICE_STATUS_REFUNDED) return 'refunded';
+  if (invoiceListShowsPartiallyRefunded(inv, refunds)) return 'partially_refunded';
+  return null;
 }
 
 export async function saveRefund(ref: Partial<POSRefund>): Promise<POSRefund | null> {
@@ -1187,6 +1636,8 @@ export async function saveRefund(ref: Partial<POSRefund>): Promise<POSRefund | n
       id: ref.id || `ref-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       refund_number: ref.refund_number || '',
       invoice_id: ref.invoice_id || null,
+      invoice_links:
+        ref.invoice_links && ref.invoice_links.length > 0 ? JSON.stringify(ref.invoice_links) : null,
       receipt_id: ref.receipt_id || null,
       customer_id: ref.customer_id || null,
       customer_name: ref.customer_name || '',
@@ -1198,7 +1649,11 @@ export async function saveRefund(ref: Partial<POSRefund>): Promise<POSRefund | n
       reason: ref.reason || '', notes: ref.notes || '',
     });
     broadcastPOSChange('pos_refunds');
-    return { ...data, items: sanitizeItems(data.items) };
+    return {
+      ...data,
+      items: sanitizeItems(data.items),
+      invoice_links: normalizeRefundInvoiceLinks(data.invoice_links),
+    };
   } catch (e) {
     console.error('saveRefund:', e);
     return null;
@@ -1582,9 +2037,95 @@ export async function markInvoicePaidAndDelivered(
     amount_paid: invoice.total,
     items: invoice.items,
     total: invoice.total,
+    subtotal: invoice.subtotal,
+    tax_rate: invoice.tax_rate,
+    tax_amount: invoice.tax_amount,
+    discount_amount: invoice.discount_amount,
     invoice_links: [{ invoice_id: invoice.id, amount_applied: invoice.total }],
   });
   return { invoice: updatedInvoice, receipt };
+}
+
+/**
+ * When an invoice is refunded or partially refunded, mirror that on the linked sales order
+ * (`pos_invoices.order_id` or `pos_orders.invoice_id`) so the Orders list matches the invoice.
+ * Usually redundant with {@link syncLinkedFromSavedInvoice} after {@link saveInvoice}; kept for callers
+ * that persist invoices with `{ syncLinked: false }` or need an explicit resync.
+ */
+export async function syncLinkedOrderStatusFromInvoiceRefundState(
+  invoiceAfterSave: POSInvoice,
+  refundsHint?: POSRefund[] | null
+): Promise<void> {
+  let targetStatus: 'refunded' | 'partially_refunded' | null;
+  try {
+    targetStatus = await resolveRefundMirroredOrderStatus(invoiceAfterSave, refundsHint);
+  } catch {
+    return;
+  }
+  if (!targetStatus) return;
+
+  let orders: POSOrder[];
+  try {
+    orders = await fetchOrders();
+  } catch {
+    return;
+  }
+  const oid =
+    invoiceAfterSave.order_id != null && String(invoiceAfterSave.order_id).trim() !== ''
+      ? String(invoiceAfterSave.order_id).trim()
+      : '';
+  let o = oid ? orders.find((x) => String(x.id) === oid) : undefined;
+  if (!o && invoiceAfterSave.id) {
+    o = orders.find((x) => x.invoice_id != null && String(x.invoice_id) === String(invoiceAfterSave.id));
+  }
+  if (!o) return;
+  if (o.status === targetStatus) return;
+
+  try {
+    await saveOrder({ ...o, status: targetStatus }, { syncLinked: false });
+  } catch (e) {
+    console.error('syncLinkedOrderStatusFromInvoiceRefundState', e);
+  }
+}
+
+/** After a refund completes, add returned quantities back to CMS catalog stock (per product_id). */
+async function applyRestockFromRefundItems(items: POSLineItem[]): Promise<void> {
+  const qtyByProduct = new Map<string, number>();
+  for (const row of items) {
+    const pid = String(row.product_id || '').trim();
+    if (!pid) continue;
+    const q = Math.max(0, Number(row.quantity) || 0);
+    if (q <= 0) continue;
+    qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + q);
+  }
+  if (qtyByProduct.size === 0) return;
+  let products: Awaited<ReturnType<typeof fetchCustomProducts>>;
+  try {
+    products = await fetchCustomProducts();
+  } catch (e) {
+    console.error('applyRestockFromRefundItems: fetchCustomProducts', e);
+    return;
+  }
+  const byId = new Map(products.map((p) => [p.id, p]));
+  let anyOk = false;
+  for (const [pid, addQty] of qtyByProduct) {
+    const p = byId.get(pid);
+    if (!p) {
+      console.warn('applyRestockFromRefundItems: product not in catalog', pid);
+      continue;
+    }
+    const current = Number(p.stockCount) || 0;
+    const next = current + addQty;
+    const ok = await updateProductStockCount(pid, next);
+    if (ok) anyOk = true;
+  }
+  if (anyOk && typeof window !== 'undefined') {
+    try {
+      await broadcastCMSUpdate();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export async function processRefund(params: {
@@ -1607,6 +2148,11 @@ export async function processRefund(params: {
     return null;
   }
   const refundNumber = await generateDocNumber('refund');
+  const itemsWithInvoiceLabel = items.map((it) => ({
+    ...it,
+    source_invoice_number: (it as POSLineItem).source_invoice_number || invoice.invoice_number,
+  }));
+  const creditLike = refundType === 'store_credit' || refundType === 'exchange';
   const refund = await saveRefund({
     refund_number: refundNumber,
     invoice_id: invoice.id,
@@ -1615,15 +2161,15 @@ export async function processRefund(params: {
     customer_name: invoice.customer_name,
     refund_type: refundType,
     status: 'completed',
-    items,
+    items: itemsWithInvoiceLabel,
     subtotal,
     tax_amount: taxAmount,
     total,
-    store_credit_amount: refundType === 'store_credit' ? total : 0,
+    store_credit_amount: creditLike ? total : 0,
     reason,
     notes,
   });
-  if (refund && refundType === 'store_credit' && invoice.customer_id) {
+  if (refund && creditLike && invoice.customer_id) {
     const { store_credit } = await apiGet<{ store_credit: number }>(
       `/api/pos/customers/${encodeURIComponent(invoice.customer_id)}/store-credit`
     );
@@ -1631,13 +2177,173 @@ export async function processRefund(params: {
   }
   if (refund) {
     const paidAfter = Math.max(0, paidBefore - total);
-    const newStatus =
-      paidAfter < 0.01 ? INVOICE_STATUS_REFUNDED : INVOICE_STATUS_PAID;
-    await saveInvoice({
-      ...invoice,
-      status: newStatus,
-      amount_paid: paidAfter,
+    const invTotal = nMoney(invoice.total);
+    let newStatus: POSInvoice['status'];
+    if (paidAfter < 0.01) {
+      newStatus = INVOICE_STATUS_REFUNDED;
+    } else if (paidAfter + 0.005 < invTotal) {
+      newStatus = INVOICE_STATUS_PARTIALLY_PAID;
+    } else {
+      newStatus = INVOICE_STATUS_PAID;
+    }
+    await saveInvoice(
+      {
+        ...invoice,
+        status: newStatus,
+        amount_paid: paidAfter,
+      },
+      refund ? { refundsHint: [refund] } : undefined
+    );
+    try {
+      await applyRestockFromRefundItems(itemsWithInvoiceLabel);
+    } catch (e) {
+      console.error('processRefund: restock failed', e);
+    }
+    try {
+      await adjustReceiptAllocationsAfterRefund({
+        receiptId,
+        segments: [{ invoiceId: String(invoice.id), refundTotal: total }],
+      });
+    } catch (e) {
+      console.error('processRefund: receipt allocation adjust failed', e);
+    }
+  }
+  return refund;
+}
+
+/**
+ * Receipt-originated refunds: always one REF-* row (one `generateDocNumber` + one `saveRefund`), whether one
+ * or many invoices. Invoices list still uses {@link processRefund} for a single-invoice refund from that page.
+ */
+export async function processRefundSegments(params: {
+  segments: { invoice: POSInvoice; items: POSLineItem[] }[];
+  refundType: 'cash' | 'store_credit' | 'exchange';
+  reason: string;
+  notes: string;
+  receiptId?: string | null;
+}): Promise<POSRefund | null> {
+  const { segments, refundType, reason, notes, receiptId } = params;
+  if (segments.length === 0) return null;
+
+  const cid0 = String(segments[0].invoice.customer_id || '').trim();
+  for (let i = 1; i < segments.length; i++) {
+    if (String(segments[i].invoice.customer_id || '').trim() !== cid0) {
+      console.error('processRefundSegments: invoices must share the same customer');
+      return null;
+    }
+  }
+
+  type Prep = {
+    invoice: POSInvoice;
+    items: POSLineItem[];
+    subtotal: number;
+    taxAmount: number;
+    total: number;
+  };
+  const prepared: Prep[] = [];
+  for (const seg of segments) {
+    const { invoice, items } = seg;
+    const subtotal = items.reduce((s, i) => s + (Number(i.total) || 0), 0);
+    const taxAmount =
+      invoice.tax_rate > 0 ? taxAmountFromSubtotalAndGctPercent(subtotal, invoice.tax_rate) : 0;
+    const total = subtotal + taxAmount;
+    const paidBefore = Number(invoice.amount_paid) || 0;
+    if (total > paidBefore + 0.02) {
+      console.error('processRefundSegments: refund total exceeds amount paid', {
+        invoice: invoice.invoice_number,
+        total,
+        paidBefore,
+      });
+      return null;
+    }
+    prepared.push({ invoice, items, subtotal, taxAmount, total });
+  }
+
+  const aggSub = prepared.reduce((s, p) => s + p.subtotal, 0);
+  const aggTax = prepared.reduce((s, p) => s + p.taxAmount, 0);
+  const aggTotal = prepared.reduce((s, p) => s + p.total, 0);
+  const refundNumber = await generateDocNumber('refund');
+
+  const multiInvoice = prepared.length > 1;
+  const invoice_links: POSRefundInvoiceLink[] | undefined = multiInvoice
+    ? prepared.map((p) => ({
+        invoice_id: p.invoice.id,
+        invoice_number: p.invoice.invoice_number,
+        subtotal: p.subtotal,
+        tax_amount: p.taxAmount,
+        total: p.total,
+      }))
+    : undefined;
+
+  const combinedItems: POSLineItem[] = prepared.flatMap((p) =>
+    p.items.map((it) => ({
+      ...it,
+      source_invoice_number: (it as POSLineItem).source_invoice_number || p.invoice.invoice_number,
+    }))
+  );
+
+  const inv0 = segments[0].invoice;
+  const creditLikeSeg = refundType === 'store_credit' || refundType === 'exchange';
+  const refund = await saveRefund({
+    refund_number: refundNumber,
+    invoice_id: multiInvoice ? null : prepared[0].invoice.id,
+    invoice_links,
+    receipt_id: receiptId || null,
+    customer_id: inv0.customer_id,
+    customer_name: inv0.customer_name,
+    refund_type: refundType,
+    status: 'completed',
+    items: combinedItems,
+    subtotal: aggSub,
+    tax_amount: aggTax,
+    total: aggTotal,
+    store_credit_amount: creditLikeSeg ? aggTotal : 0,
+    reason,
+    notes,
+  });
+  if (!refund) return null;
+  if (creditLikeSeg && inv0.customer_id) {
+    const { store_credit } = await apiGet<{ store_credit: number }>(
+      `/api/pos/customers/${encodeURIComponent(inv0.customer_id)}/store-credit`
+    );
+    await updateCustomerStoreCredit(inv0.customer_id, Number(store_credit || 0) + aggTotal);
+  }
+  for (const p of prepared) {
+    const paidBefore = Number(p.invoice.amount_paid) || 0;
+    const paidAfter = Math.max(0, paidBefore - p.total);
+    const invTotal = nMoney(p.invoice.total);
+    let newStatus: POSInvoice['status'];
+    if (paidAfter < 0.01) {
+      newStatus = INVOICE_STATUS_REFUNDED;
+    } else if (paidAfter + 0.005 < invTotal) {
+      newStatus = INVOICE_STATUS_PARTIALLY_PAID;
+    } else {
+      newStatus = INVOICE_STATUS_PAID;
+    }
+    await saveInvoice(
+      {
+        ...p.invoice,
+        status: newStatus,
+        amount_paid: paidAfter,
+      },
+      { refundsHint: [refund] }
+    );
+  }
+  try {
+    await applyRestockFromRefundItems(combinedItems);
+  } catch (e) {
+    console.error('processRefundSegments: restock failed', e);
+  }
+  try {
+    await adjustReceiptAllocationsAfterRefund({
+      receiptId,
+      segments: prepared.map((p) => ({
+        invoiceId: String(p.invoice.id),
+        refundTotal: p.total,
+      })),
     });
+  } catch (e) {
+    console.error('processRefundSegments: receipt allocation adjust failed', e);
   }
   return refund;
 }
@@ -1709,7 +2415,10 @@ export async function fetchCustomerHistory(customerId: string) {
     invoices: (data.invoices || []).map(numericDoc),
     receipts: (data.receipts || []).map(numericDoc),
     quotes: (data.quotes || []).map(numericDoc),
-    refunds: (data.refunds || []).map(numericDoc),
+    refunds: (data.refunds || []).map((r: any) => ({
+      ...numericDoc(r),
+      invoice_links: normalizeRefundInvoiceLinks(r.invoice_links),
+    })),
     quote_requests: data.quote_requests || [],
   };
 }

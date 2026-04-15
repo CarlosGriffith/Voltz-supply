@@ -25,6 +25,7 @@ const invoiceNumber = args[0] || 'INV-1000008';
 function linkedDocStatusFromInvoice(status) {
   const raw = String(status || '').trim();
   const compact = raw.toLowerCase().replace(/\s+/g, '_');
+  if (compact === 'refunded' || raw === 'Refunded') return 'refunded';
   if (compact === 'paid') return 'invoice_generated_paid';
   if (compact === 'partially_paid' || compact === 'partial') return 'invoice_generated_partially_paid';
   if (compact === 'unpaid' || compact === 'overdue') return 'invoice_generated_unpaid';

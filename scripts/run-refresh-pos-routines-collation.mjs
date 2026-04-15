@@ -173,36 +173,39 @@ const statements = [
     DECLARE v_order_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     DECLARE v_quote_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     DECLARE v_q_status VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    DECLARE v_existing_status VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     IF p_invoice_id IS NOT NULL THEN
-      SELECT COALESCE(total,0), order_id, quote_id
-        INTO v_total, v_order_id, v_quote_id
+      SELECT COALESCE(total,0), order_id, quote_id, TRIM(status)
+        INTO v_total, v_order_id, v_quote_id, v_existing_status
       FROM pos_invoices WHERE id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci LIMIT 1;
 
-      SELECT COALESCE(SUM(amount_paid), 0) INTO v_paid
-      FROM pos_receipts WHERE invoice_id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci AND status = 'approved';
+      IF v_existing_status IS NULL OR LOWER(v_existing_status) <> 'refunded' THEN
+        SELECT COALESCE(SUM(amount_paid), 0) INTO v_paid
+        FROM pos_receipts WHERE invoice_id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci AND status = 'approved';
 
-      IF v_paid <= 0 THEN SET v_status = 'Unpaid';
-      ELSEIF v_paid < v_total THEN SET v_status = 'Partially Paid';
-      ELSE SET v_status = 'Paid';
-      END IF;
+        IF v_paid <= 0 THEN SET v_status = 'Unpaid';
+        ELSEIF v_paid < v_total THEN SET v_status = 'Partially Paid';
+        ELSE SET v_status = 'Paid';
+        END IF;
 
-      IF v_status = 'Paid' THEN SET v_q_status = 'invoice_generated_paid';
-      ELSEIF v_status = 'Partially Paid' THEN SET v_q_status = 'invoice_generated_partially_paid';
-      ELSE SET v_q_status = 'invoice_generated_unpaid';
-      END IF;
+        IF v_status = 'Paid' THEN SET v_q_status = 'invoice_generated_paid';
+        ELSEIF v_status = 'Partially Paid' THEN SET v_q_status = 'invoice_generated_partially_paid';
+        ELSE SET v_q_status = 'invoice_generated_unpaid';
+        END IF;
 
-      UPDATE pos_invoices
-        SET amount_paid = v_paid, status = v_status, updated_at = CURRENT_TIMESTAMP(3)
-      WHERE id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci;
+        UPDATE pos_invoices
+          SET amount_paid = v_paid, status = v_status, updated_at = CURRENT_TIMESTAMP(3)
+          WHERE id COLLATE utf8mb4_unicode_ci = p_invoice_id COLLATE utf8mb4_unicode_ci;
 
-      IF v_order_id IS NOT NULL THEN
-        UPDATE pos_orders SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
-        WHERE id COLLATE utf8mb4_unicode_ci = v_order_id COLLATE utf8mb4_unicode_ci;
-      END IF;
+        IF v_order_id IS NOT NULL THEN
+          UPDATE pos_orders SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
+          WHERE id COLLATE utf8mb4_unicode_ci = v_order_id COLLATE utf8mb4_unicode_ci;
+        END IF;
 
-      IF v_quote_id IS NOT NULL THEN
-        UPDATE pos_quotes SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
-        WHERE id COLLATE utf8mb4_unicode_ci = v_quote_id COLLATE utf8mb4_unicode_ci;
+        IF v_quote_id IS NOT NULL THEN
+          UPDATE pos_quotes SET status = v_q_status, invoice_id = p_invoice_id, updated_at = CURRENT_TIMESTAMP(3)
+          WHERE id COLLATE utf8mb4_unicode_ci = v_quote_id COLLATE utf8mb4_unicode_ci;
+        END IF;
       END IF;
     END IF;
   END`,
@@ -215,11 +218,23 @@ const statements = [
       SELECT COALESCE(SUM(GREATEST(0, COALESCE(i.total, 0) - COALESCE(rp.paid, 0))), 0) INTO v_bal
       FROM pos_invoices i
       LEFT JOIN (
-        SELECT invoice_id, SUM(amount_paid) AS paid
-        FROM pos_receipts WHERE status = 'approved' GROUP BY invoice_id
+        SELECT l.invoice_id AS invoice_id, SUM(l.amount_applied) AS paid
+        FROM pos_receipt_invoice_links l
+        INNER JOIN pos_receipts r ON r.id = l.receipt_id AND r.status = 'approved'
+        GROUP BY l.invoice_id
       ) rp ON rp.invoice_id = i.id
       WHERE i.customer_id COLLATE utf8mb4_unicode_ci = p_customer_id COLLATE utf8mb4_unicode_ci
-        AND i.status COLLATE utf8mb4_unicode_ci IN ('Unpaid', 'Partially Paid');
+        AND i.status COLLATE utf8mb4_unicode_ci IN ('Unpaid', 'Partially Paid')
+        AND NOT EXISTS (
+          SELECT 1 FROM pos_refunds rf
+          WHERE rf.invoice_id COLLATE utf8mb4_unicode_ci = i.id COLLATE utf8mb4_unicode_ci
+             OR (
+               rf.invoice_links IS NOT NULL
+               AND TRIM(rf.invoice_links) NOT IN ('', 'null', '[]')
+               AND JSON_VALID(rf.invoice_links)
+               AND JSON_SEARCH(rf.invoice_links, 'one', i.id, NULL, '$[*].invoice_id') IS NOT NULL
+             )
+        );
 
       UPDATE pos_customers
       SET account_balance = GREATEST(v_bal, 0),
