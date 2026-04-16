@@ -20,6 +20,7 @@ import { buildReceiptPrintDocPropsForPreview, buildRefundPrintDocProps } from '@
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { POS_PAGE_SHELL, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
+import { parseQuoteRequestDeliveryPreferences } from '@/lib/quoteRequestDeliveryPrefs';
 import { getApiHealthDb } from '@/lib/api';
 import { broadcastCMSUpdate } from '@/lib/cmsCache';
 import {
@@ -31,6 +32,9 @@ import {
   taxAmountFromSubtotalAndGctPercent,
   digitsFromPhoneInput,
   formatPhoneUsMask,
+  displayUsPhoneFromStored,
+  findCustomerByEmailOrPhone,
+  isPlaceholderWalkInCustomerName,
 } from '@/lib/utils';
 
 import { saveConfigDetailed, saveConfig as dbSaveConfig, fetchConfig, saveConfig } from '@/lib/cmsData';
@@ -43,7 +47,8 @@ import {
   convertOrderToInvoice, createOrderFromQuote, createInvoiceFromQuote,
   createOrderFromWebsiteQuoteRequest, createInvoiceFromWebsiteQuoteRequest,
   markInvoicePaidAndDelivered, processRefund, processRefundSegments, generateDocNumber, sendEmail, fetchCustomerHistory,
-  fetchMergedCustomerHistory, mergePlaceholderCustomerRows,
+  fetchMergedCustomerHistory,
+  saveInvoice, saveReceipt,
   invoiceIsOpenBalance, invoiceIsFullyPaid,   invoiceCanProcessRefund, latestReceiptIdForInvoice,
   invoiceLineItemsRemainingForRefund,
   INVOICE_STATUS_PAID, INVOICE_STATUS_UNPAID,
@@ -237,7 +242,7 @@ function posQuoteWorkflowStatusLabel(status: string): string {
   const m: Record<string, string> = {
     reviewed: 'Reviewed',
     printed: 'Printed',
-    emailed: 'Emailed',
+    emailed: 'Sent',
     dormant: 'Dormant',
     order_generated: 'Order Generated',
     invoice_generated_unpaid: 'Invoice Generated - Unpaid',
@@ -251,7 +256,10 @@ function posQuoteWorkflowStatusLabel(status: string): string {
 }
 
 // ─── Status Badge ───
-const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
+const StatusBadge: React.FC<{ status: string; /** Quotes / quote requests: show `emailed` as "Sent". */ emailedAsSent?: boolean }> = ({
+  status,
+  emailedAsSent = false,
+}) => {
   const colors: Record<string, string> = {
     draft: 'bg-gray-100 text-gray-600', new: 'bg-[#EF4444]/25 text-[#B91C1C]', sent: 'bg-blue-100 text-blue-700',
     pending: 'bg-yellow-100 text-yellow-700', confirmed: 'bg-blue-100 text-blue-700', processing: 'bg-purple-100 text-purple-700',
@@ -281,7 +289,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     reviewed: 'Reviewed',
     quoted: 'Quoted',
     printed: 'Printed',
-    emailed: 'Emailed',
+    emailed: emailedAsSent ? 'Sent' : 'Emailed',
     dormant: 'Dormant',
     order_generated: 'Order Generated',
     invoice_generated_unpaid: 'Invoice Generated - Unpaid',
@@ -433,7 +441,7 @@ const QuoteOrderInvoiceStatusCell: React.FC<{
             }`}
             aria-label={inv ? `Open ${inv.invoice_number} on Invoices page` : 'Linked document unavailable'}
           >
-            <StatusBadge status={status} />
+            <StatusBadge status={status} emailedAsSent={docType === 'quote'} />
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -460,7 +468,7 @@ const QuoteOrderInvoiceStatusCell: React.FC<{
             }`}
             aria-label={ord ? `Open order ${ord.order_number} on Orders page` : 'Linked order unavailable'}
           >
-            <StatusBadge status={status} />
+            <StatusBadge status={status} emailedAsSent />
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -470,7 +478,7 @@ const QuoteOrderInvoiceStatusCell: React.FC<{
     );
   }
 
-  return <StatusBadge status={status} />;
+  return <StatusBadge status={status} emailedAsSent={docType === 'quote'} />;
 };
 
 const LINKED_QUOTE_REQUEST_STATUSES = new Set(['quoted', 'printed', 'emailed']);
@@ -482,7 +490,7 @@ const QuoteRequestQuotedStatusCell: React.FC<{
 }> = ({ qr, quoteList, onOpenQuote }) => {
   const status = qr.status || '';
   if (!LINKED_QUOTE_REQUEST_STATUSES.has((status || '').toLowerCase())) {
-    return <StatusBadge status={status} />;
+    return <StatusBadge status={status} emailedAsSent />;
   }
   const linked = findQuoteForWebsiteRequest(qr, quoteList);
   const quoteNum = (linked?.quote_number || qr.quote_number || '').trim();
@@ -500,7 +508,7 @@ const QuoteRequestQuotedStatusCell: React.FC<{
           }`}
           aria-label={quoteNum ? `Open ${quoteNum} on Quotes page` : 'Quote link unavailable'}
         >
-          <StatusBadge status={status} />
+          <StatusBadge status={status} emailedAsSent />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -1095,10 +1103,12 @@ const CMSDashboardInner: React.FC = () => {
   const [orderEditorReturnPage, setOrderEditorReturnPage] = useState<PageKey | null>(null);
   const [invoiceEditorReturnPage, setInvoiceEditorReturnPage] = useState<PageKey | null>(null);
   const [customerPendingDelete, setCustomerPendingDelete] = useState<POSCustomer | null>(null);
-  const { displayCustomers, mergedPlaceholderIdsByCanonicalId } = useMemo(
-    () => mergePlaceholderCustomerRows(customers),
+  const realCustomers = useMemo(
+    () => customers.filter((c) => !isPlaceholderWalkInCustomerName(c.name)),
     [customers]
   );
+  const displayCustomers = realCustomers;
+  const mergedPlaceholderIdsByCanonicalId = useMemo(() => new Map<string, string[]>(), []);
   const [checkoutSource, setCheckoutSource] = useState<{ sourceType: 'quote' | 'order' | 'invoice'; sourceDocId: string } | null>(null);
   /** After Exchange refund: Checkout opens with this customer + intro dialog + Pay with Store Credit. */
   const [checkoutExchangeHandoff, setCheckoutExchangeHandoff] = useState<{ customerId: string } | null>(null);
@@ -1241,9 +1251,23 @@ const CMSDashboardInner: React.FC = () => {
   const [refundType, setRefundType] = useState<'cash' | 'store_credit' | 'exchange'>('cash');
   const [refundReason, setRefundReason] = useState('');
   const [refundItems, setRefundItems] = useState<POSLineItem[]>([]);
+  const [refundRealCustomerArmed, setRefundRealCustomerArmed] = useState(false);
+  const [refundRealCustomerForm, setRefundRealCustomerForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    company: '',
+    address: '',
+  });
+  const refundMatchedCustomerIdRef = useRef<string | null>(null);
   const [refundProcessing, setRefundProcessing] = useState(false);
   /** Synchronous guard — blocks double-submit before React re-renders `refundProcessing`. */
   const refundSubmitLockRef = useRef(false);
+  const resetRefundRealCustomerForm = useCallback(() => {
+    setRefundRealCustomerArmed(false);
+    setRefundRealCustomerForm({ name: '', email: '', phone: '', company: '', address: '' });
+    refundMatchedCustomerIdRef.current = null;
+  }, []);
 
   // Checkout modal
   const [checkoutInvoice, setCheckoutInvoice] = useState<POSInvoice | null>(null);
@@ -1355,6 +1379,40 @@ const CMSDashboardInner: React.FC = () => {
       closeMobileSidebar();
     }
   };
+
+  const closeRefundModal = useCallback(() => {
+    setRefundInvoice(null);
+    setRefundReceiptId(null);
+    setRefundReceiptLinkedInvoices(null);
+    setRefundLinesByInvoiceId(null);
+    setRefundSourceReceiptNumber(null);
+    setRefundProcessing(false);
+    resetRefundRealCustomerForm();
+    refundSubmitLockRef.current = false;
+  }, [resetRefundRealCustomerForm]);
+
+  useEffect(() => {
+    if (customers.length === 0) return;
+    const match = findCustomerByEmailOrPhone(
+      customers,
+      refundRealCustomerForm.email,
+      refundRealCustomerForm.phone
+    );
+    if (!match) {
+      refundMatchedCustomerIdRef.current = null;
+      return;
+    }
+    if (refundMatchedCustomerIdRef.current === String(match.id)) return;
+    refundMatchedCustomerIdRef.current = String(match.id);
+    setRefundRealCustomerForm((prev) => ({
+      ...prev,
+      name: String(match.name || '').trim() || prev.name,
+      email: String(match.email || '').trim() || prev.email,
+      phone: displayUsPhoneFromStored(match.phone),
+      company: String(match.company || '').trim() || prev.company,
+      address: String(match.address || '').trim() || prev.address,
+    }));
+  }, [customers, refundRealCustomerForm.email, refundRealCustomerForm.phone]);
   useEffect(() => {
     const h = pageHistoryRef.current;
     if (h[h.length - 1] !== activePage) h.push(activePage);
@@ -1502,6 +1560,7 @@ const CMSDashboardInner: React.FC = () => {
   const openWebsiteRequestInQuoteEditor = useCallback(
     (qr: POSQuoteRequest, listReturnPage: PageKey = 'pos-quote-requests') => {
       const linked = findQuoteForWebsiteRequest(qr, quotes);
+      const deliveryPrefs = parseQuoteRequestDeliveryPreferences(qr.message ?? '');
       if (linked) {
         setEditDoc(linked);
         setPrefillData({
@@ -1516,6 +1575,8 @@ const CMSDashboardInner: React.FC = () => {
           productQuantity:
             qr.quantity != null && String(qr.quantity).trim() !== '' ? String(qr.quantity) : '',
           notes: (linked.notes ?? qr.message) ?? '',
+          sendViaEmail: deliveryPrefs.sendViaEmail,
+          sendViaWhatsapp: deliveryPrefs.sendViaWhatsapp,
         });
       } else {
         setEditDoc(null);
@@ -1531,6 +1592,8 @@ const CMSDashboardInner: React.FC = () => {
           notes: qr.message ?? '',
           websiteRequestId: qr.id,
           websiteQuoteRequestStatus: qr.status,
+          sendViaEmail: deliveryPrefs.sendViaEmail,
+          sendViaWhatsapp: deliveryPrefs.sendViaWhatsapp,
         });
       }
       setQuoteEditorReturnPage(listReturnPage);
@@ -1721,7 +1784,7 @@ const CMSDashboardInner: React.FC = () => {
       invoices={invoices}
       receipts={receipts}
       refunds={refunds}
-      customers={customers}
+      customers={realCustomers}
       quoteRequests={quoteRequests}
     />
   );
@@ -1809,7 +1872,7 @@ const CMSDashboardInner: React.FC = () => {
         {!embed && (
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+            <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
               <ArrowLeft className="w-5 h-5" />
             </button>
             <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -2288,6 +2351,7 @@ const CMSDashboardInner: React.FC = () => {
                                     setRefundItems(invoiceLineItemsRemainingForRefund(inv, refunds));
                                     setRefundType('cash');
                                     setRefundReason('');
+                                    resetRefundRealCustomerForm();
                                   }}
                                 >
                                   <PosActionsFa icon={POS_MENU_FA.refund} />
@@ -2345,6 +2409,7 @@ const CMSDashboardInner: React.FC = () => {
                                       );
                                       setRefundType('cash');
                                       setRefundReason('');
+                                      resetRefundRealCustomerForm();
                                     }}
                                   >
                                     <PosActionsFa icon={POS_MENU_FA.refund} />
@@ -2396,7 +2461,7 @@ const CMSDashboardInner: React.FC = () => {
     <div className={POS_PAGE_SHELL}>
       {!embed && (
       <div className="flex items-center gap-2 mb-6">
-        <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+        <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -2747,7 +2812,7 @@ const CMSDashboardInner: React.FC = () => {
                 setCustomerHistory(null);
                 navTo('pos-customers');
               }}
-              className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
+              className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -2786,7 +2851,7 @@ const CMSDashboardInner: React.FC = () => {
               setCustomerHistory(null);
               goBackPage();
             }}
-            className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
+            className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -2891,7 +2956,7 @@ const CMSDashboardInner: React.FC = () => {
     <div className={POS_PAGE_SHELL}>
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+          <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -2934,6 +2999,14 @@ const CMSDashboardInner: React.FC = () => {
             <button onClick={async () => {
               if (!custForm.name.trim()) {
                 notify({ variant: 'error', title: 'Customer not saved', subtitle: 'POS → Customers — Name is required' });
+                return;
+              }
+              if (isPlaceholderWalkInCustomerName(custForm.name)) {
+                notify({
+                  variant: 'error',
+                  title: 'Customer not saved',
+                  subtitle: 'POS → Customers — "Visitor" and "Guest" are placeholder customers and should not be created here',
+                });
                 return;
               }
               const savedCust = await saveCustomer({ id: selectedCustomer?.id, ...custForm, store_credit: selectedCustomer?.store_credit || 0 });
@@ -3152,7 +3225,7 @@ const CMSDashboardInner: React.FC = () => {
       {!embed && (
       <>
       <div className="flex items-center gap-2 mb-6">
-        <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+        <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -3302,7 +3375,7 @@ const CMSDashboardInner: React.FC = () => {
     <div className={POS_PAGE_SHELL}>
       {!embed && (
       <div className="flex items-center gap-2 mb-6">
-        <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+        <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -3562,7 +3635,7 @@ const CMSDashboardInner: React.FC = () => {
   const renderEmailSettings = () => (
     <div className={POS_PAGE_SHELL}>
       <div className="flex items-center gap-2 mb-6">
-        <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+        <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -3722,7 +3795,7 @@ const CMSDashboardInner: React.FC = () => {
   const renderBillingSettings = () => (
     <div className={POS_PAGE_SHELL}>
       <div className="flex items-center gap-2 mb-6">
-        <button type="button" onClick={goBackPage} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+        <button type="button" onClick={goBackPage} className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-[#1a2332]">
@@ -4075,13 +4148,7 @@ const CMSDashboardInner: React.FC = () => {
             className="absolute inset-0 bg-black/60"
             onClick={() => {
               if (refundProcessing) return;
-              setRefundInvoice(null);
-              setRefundReceiptId(null);
-              setRefundReceiptLinkedInvoices(null);
-              setRefundLinesByInvoiceId(null);
-              setRefundSourceReceiptNumber(null);
-              setRefundProcessing(false);
-              refundSubmitLockRef.current = false;
+              closeRefundModal();
             }}
           />
           <div
@@ -4113,6 +4180,75 @@ const CMSDashboardInner: React.FC = () => {
                 ))}
               </div>
             </div>
+            {(() => {
+              const namePool = (refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 0)
+                ? refundReceiptLinkedInvoices.map((inv) => String(inv.customer_name || '').trim())
+                : [String(refundInvoice.customer_name || '').trim()];
+              const needsRealCustomer =
+                (refundType === 'store_credit' || refundType === 'exchange') &&
+                namePool.some((n) => isPlaceholderWalkInCustomerName(n));
+              if (!needsRealCustomer) return null;
+              return (
+                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-sm font-semibold text-amber-900">
+                    Real customer required for {refundType === 'exchange' ? 'Exchange' : 'Store Credit'}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-800">
+                    This refund belongs to Visitor/Guest. Enter the real customer now. On the next click of
+                    {' '}<span className="font-semibold">Process Refund & Print</span>, the receipt/invoice will be
+                    reassigned and the refund will continue normally.
+                  </p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <input
+                      value={refundRealCustomerForm.name}
+                      onChange={(e) =>
+                        setRefundRealCustomerForm((prev) => ({ ...prev, name: e.target.value }))
+                      }
+                      className="px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white"
+                      placeholder="Customer Name *"
+                    />
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={14}
+                      value={refundRealCustomerForm.phone}
+                      onChange={(e) =>
+                        setRefundRealCustomerForm((prev) => ({
+                          ...prev,
+                          phone: formatPhoneUsMask(digitsFromPhoneInput(e.target.value)),
+                        }))
+                      }
+                      className="px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white font-mono tracking-tight"
+                      placeholder="(876) 123-4567"
+                    />
+                    <input
+                      value={refundRealCustomerForm.email}
+                      onChange={(e) =>
+                        setRefundRealCustomerForm((prev) => ({ ...prev, email: e.target.value }))
+                      }
+                      className="px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white"
+                      placeholder="Email"
+                    />
+                    <input
+                      value={refundRealCustomerForm.company}
+                      onChange={(e) =>
+                        setRefundRealCustomerForm((prev) => ({ ...prev, company: e.target.value }))
+                      }
+                      className="px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white"
+                      placeholder="Company"
+                    />
+                    <input
+                      value={refundRealCustomerForm.address}
+                      onChange={(e) =>
+                        setRefundRealCustomerForm((prev) => ({ ...prev, address: e.target.value }))
+                      }
+                      className="px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white sm:col-span-2"
+                      placeholder="Address"
+                    />
+                  </div>
+                </div>
+              );
+            })()}
             {refundLinesByInvoiceId && refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 0 ? (
               <div className="mb-4 space-y-5">
                 {refundReceiptLinkedInvoices.map((inv) => {
@@ -4281,21 +4417,170 @@ const CMSDashboardInner: React.FC = () => {
                 type="button"
                 disabled={refundProcessing}
                 onClick={async () => {
-                  const isReceiptFlow = Boolean(
-                    refundLinesByInvoiceId &&
-                      refundReceiptLinkedInvoices &&
-                      refundReceiptLinkedInvoices.length > 0
-                  );
-                  const ops: { invoice: POSInvoice; items: POSLineItem[] }[] = [];
-                  if (isReceiptFlow && refundReceiptLinkedInvoices && refundLinesByInvoiceId) {
-                    for (const inv of refundReceiptLinkedInvoices) {
+                  const namePool = (refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 0)
+                    ? refundReceiptLinkedInvoices.map((inv) => String(inv.customer_name || '').trim())
+                    : [String(refundInvoice?.customer_name || '').trim()];
+                  const needsRealCustomer =
+                    (refundType === 'store_credit' || refundType === 'exchange') &&
+                    namePool.some((n) => isPlaceholderWalkInCustomerName(n));
+                  const enteredRealName = refundRealCustomerForm.name.trim();
+                  const enteredRealPhone = formatPhoneUsMask(digitsFromPhoneInput(refundRealCustomerForm.phone));
+                  const enteredRealEmail = refundRealCustomerForm.email.trim();
+                  const hasFullPhone = digitsFromPhoneInput(enteredRealPhone).length === 10;
+                  const hasReadyRealCustomerDetails =
+                    !!enteredRealName &&
+                    !isPlaceholderWalkInCustomerName(enteredRealName) &&
+                    hasFullPhone;
+                  if (needsRealCustomer && !refundRealCustomerArmed && !hasReadyRealCustomerDetails) {
+                    setRefundRealCustomerArmed(true);
+                    notify({
+                      variant: 'error',
+                      title: 'Real customer required',
+                      subtitle: 'Enter customer details, then click Process Refund & Print again.',
+                    });
+                    return;
+                  }
+                  if (refundSubmitLockRef.current) return;
+                  refundSubmitLockRef.current = true;
+                  setRefundProcessing(true);
+                  let workingRefundInvoice = refundInvoice;
+                  let workingLinkedInvoices = refundReceiptLinkedInvoices;
+                  try {
+                    if (needsRealCustomer) {
+                      const realName = refundRealCustomerForm.name.trim();
+                      const realEmail = refundRealCustomerForm.email.trim();
+                      const realPhone = formatPhoneUsMask(digitsFromPhoneInput(refundRealCustomerForm.phone));
+                      const realCompany = refundRealCustomerForm.company.trim();
+                      const realAddress = refundRealCustomerForm.address.trim();
+                      if (!realName || isPlaceholderWalkInCustomerName(realName)) {
+                        notify({
+                          variant: 'error',
+                          title: 'Refund not processed',
+                          subtitle: 'Enter a real customer name (not Visitor/Guest).',
+                        });
+                        return;
+                      }
+                      if (digitsFromPhoneInput(realPhone).length !== 10) {
+                        notify({
+                          variant: 'error',
+                          title: 'Refund not processed',
+                          subtitle: 'Enter a full phone number (10 digits) for this customer.',
+                        });
+                        return;
+                      }
+                      const matchedByTrackedId =
+                        refundMatchedCustomerIdRef.current
+                          ? customers.find((c) => String(c.id) === refundMatchedCustomerIdRef.current)
+                          : undefined;
+                      const linked =
+                        matchedByTrackedId ??
+                        findCustomerByEmailOrPhone(customers, realEmail, realPhone) ??
+                        customers.find(
+                          (c) =>
+                            String(c.name || '').trim().toLowerCase() === realName.toLowerCase() &&
+                            !isPlaceholderWalkInCustomerName(c.name)
+                        );
+                      let savedCust: POSCustomer | null = null;
+                      if (linked?.id) {
+                        const updatedExisting = await saveCustomer({
+                          id: linked.id,
+                          name: realName,
+                          email: realEmail,
+                          phone: realPhone,
+                          company: realCompany,
+                          address: realAddress,
+                          notes: linked.notes || '',
+                          store_credit: linked.store_credit || 0,
+                        });
+                        savedCust =
+                          updatedExisting ??
+                          {
+                            ...linked,
+                            name: realName,
+                            email: realEmail,
+                            phone: realPhone,
+                            company: realCompany,
+                            address: realAddress,
+                          };
+                      } else {
+                        savedCust = await saveCustomer({
+                          name: realName,
+                          email: realEmail,
+                          phone: realPhone,
+                          company: realCompany,
+                          address: realAddress,
+                          notes: '',
+                          store_credit: 0,
+                        });
+                      }
+                      if (!savedCust?.id) {
+                        notify({
+                          variant: 'error',
+                          title: 'Refund not processed',
+                          subtitle: 'Could not save or resolve the real customer profile.',
+                        });
+                        return;
+                      }
+                      const invoiceIdsToTransfer =
+                        refundReceiptLinkedInvoices && refundReceiptLinkedInvoices.length > 0
+                          ? refundReceiptLinkedInvoices.map((inv) => String(inv.id))
+                          : refundInvoice
+                            ? [String(refundInvoice.id)]
+                            : [];
+                      const updatedInvoices = new Map<string, POSInvoice>();
+                      for (const invoiceId of invoiceIdsToTransfer) {
+                        const src =
+                          invoices.find((x) => String(x.id) === invoiceId) ||
+                          refundReceiptLinkedInvoices?.find((x) => String(x.id) === invoiceId) ||
+                          (refundInvoice && String(refundInvoice.id) === invoiceId ? refundInvoice : null);
+                        if (!src) continue;
+                        const savedInv = await saveInvoice({
+                          ...src,
+                          customer_id: savedCust.id,
+                          customer_name: savedCust.name,
+                          customer_email: savedCust.email,
+                          customer_phone: savedCust.phone,
+                          customer_company: savedCust.company,
+                        });
+                        updatedInvoices.set(invoiceId, savedInv);
+                      }
+                      if (refundReceiptId) {
+                        const rec = receipts.find((r) => String(r.id) === String(refundReceiptId));
+                        if (rec) {
+                          await saveReceipt({
+                            ...rec,
+                            customer_id: savedCust.id,
+                            customer_name: savedCust.name,
+                          });
+                        }
+                      }
+                      if (workingRefundInvoice) {
+                        const next = updatedInvoices.get(String(workingRefundInvoice.id));
+                        if (next) workingRefundInvoice = next;
+                      }
+                      if (workingLinkedInvoices && workingLinkedInvoices.length > 0) {
+                        workingLinkedInvoices = workingLinkedInvoices.map(
+                          (inv) => updatedInvoices.get(String(inv.id)) || inv
+                        );
+                      }
+                      setRefundInvoice(workingRefundInvoice);
+                      setRefundReceiptLinkedInvoices(workingLinkedInvoices);
+                      setRefundRealCustomerArmed(false);
+                    }
+                    const isReceiptFlow = Boolean(
+                      refundLinesByInvoiceId &&
+                        workingLinkedInvoices &&
+                        workingLinkedInvoices.length > 0
+                    );
+                    const ops: { invoice: POSInvoice; items: POSLineItem[] }[] = [];
+                    if (isReceiptFlow && workingLinkedInvoices && refundLinesByInvoiceId) {
+                    for (const inv of workingLinkedInvoices) {
                       if (!invoiceCanProcessRefund(inv)) continue;
                       const invId = String(inv.id);
                       const lines = refundLinesByInvoiceId[invId];
                       const activeItems = (lines ?? []).filter((i) => i.quantity > 0);
                       if (activeItems.length === 0) continue;
-                      const fresh = invoices.find((x) => String(x.id) === invId) ?? inv;
-                      ops.push({ invoice: fresh, items: activeItems });
+                      ops.push({ invoice: inv, items: activeItems });
                     }
                     if (ops.length === 0) {
                       notify({
@@ -4305,22 +4590,17 @@ const CMSDashboardInner: React.FC = () => {
                       });
                       return;
                     }
-                  } else {
-                    const activeItems = refundItems.filter((i) => i.quantity > 0);
-                    if (activeItems.length === 0) {
-                      notify({
-                        variant: 'error',
-                        title: 'Refund not processed',
-                        subtitle: 'POS → Refunds — Select at least one item',
-                      });
-                      return;
+                    } else {
+                      const activeItems = refundItems.filter((i) => i.quantity > 0);
+                      if (activeItems.length === 0) {
+                        notify({
+                          variant: 'error',
+                          title: 'Refund not processed',
+                          subtitle: 'POS → Refunds — Select at least one item',
+                        });
+                        return;
+                      }
                     }
-                  }
-
-                  if (refundSubmitLockRef.current) return;
-                  refundSubmitLockRef.current = true;
-                  setRefundProcessing(true);
-                  try {
                     let refund: POSRefund | null = null;
                     if (isReceiptFlow) {
                       refund = await processRefundSegments({
@@ -4333,7 +4613,7 @@ const CMSDashboardInner: React.FC = () => {
                     } else {
                       const activeItems = refundItems.filter((i) => i.quantity > 0);
                       refund = await processRefund({
-                        invoice: refundInvoice!,
+                        invoice: workingRefundInvoice!,
                         items: activeItems,
                         refundType,
                         reason: refundReason,
@@ -4366,11 +4646,7 @@ const CMSDashboardInner: React.FC = () => {
                         setActivePage('pos-checkout');
                       }
                     }
-                    setRefundInvoice(null);
-                    setRefundReceiptId(null);
-                    setRefundReceiptLinkedInvoices(null);
-                    setRefundLinesByInvoiceId(null);
-                    setRefundSourceReceiptNumber(null);
+                    closeRefundModal();
                   } finally {
                     refundSubmitLockRef.current = false;
                     setRefundProcessing(false);
@@ -4389,13 +4665,7 @@ const CMSDashboardInner: React.FC = () => {
                 disabled={refundProcessing}
                 onClick={() => {
                   if (refundProcessing) return;
-                  setRefundInvoice(null);
-                  setRefundReceiptId(null);
-                  setRefundReceiptLinkedInvoices(null);
-                  setRefundLinesByInvoiceId(null);
-                  setRefundSourceReceiptNumber(null);
-                  setRefundProcessing(false);
-                  refundSubmitLockRef.current = false;
+                  closeRefundModal();
                 }}
                 className={`px-4 py-2.5 border border-gray-200 rounded-lg text-sm ${
                   refundProcessing ? 'cursor-not-allowed opacity-50' : ''

@@ -4047,7 +4047,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
 
           <div className="text-sm space-y-1">
             <div className="flex justify-between">
-              <span>Due After Credit</span>
+              <span>{useStoreCredit ? 'Due After Credit' : 'Due'}</span>
               <span className="font-semibold">{fmtMoney(remainingAfterStoreCredit)}</span>
             </div>
             <div className="flex justify-between">

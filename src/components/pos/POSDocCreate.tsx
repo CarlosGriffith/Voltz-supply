@@ -14,6 +14,7 @@ import {
   POS_DEFAULT_VISITOR_CUSTOMER_NAME,
   gctPercentForCalculation,
   taxAmountFromSubtotalAndGctPercent,
+  fmtDatePOS,
   cn,
 } from '@/lib/utils';
 import { resolveMediaUrl } from '@/lib/mediaUrl';
@@ -23,7 +24,7 @@ import { Product } from '@/data/products';
 import {
   POSLineItem, POSCustomer, POSQuote, POSOrder, POSInvoice,
   fetchCustomers, fetchInvoices, saveCustomer, saveQuote, saveOrder, saveInvoice,
-  generateDocNumber, sendEmail, markQuoteRequestEmailSent,
+  generateDocNumber, sendEmail, markQuoteRequestEmailSent, sendQuoteWhatsAppNotification,
   invoiceIsFullyPaid, INVOICE_STATUS_UNPAID,
 } from '@/lib/posData';
 import { printDocument, generateEmailHTML } from '@/components/pos/POSPrintTemplate';
@@ -35,6 +36,7 @@ import {
   parseWebsiteQuoteRequestLines,
   categorySlugForWebsiteLine,
 } from '@/lib/websiteQuoteRequestParse';
+import { parseQuoteRequestDeliveryPreferences } from '@/lib/quoteRequestDeliveryPrefs';
 import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 
 type DocType = 'quote' | 'order' | 'invoice';
@@ -173,6 +175,9 @@ interface POSDocCreateProps {
     websiteRequestId?: string;
     /** Snapshot when opening from Quote Requests — avoids overwriting `quoted` / `closed` on Save. */
     websiteQuoteRequestStatus?: string;
+    /** Initial Save & Send checkboxes (from quote request message or explicit). */
+    sendViaEmail?: boolean;
+    sendViaWhatsapp?: boolean;
   };
   onSave: () => void;
   onBack: () => void;
@@ -207,6 +212,8 @@ function buildReviewFormSnapshot(args: {
   taxRate: number;
   discountInput: string;
   selectedCustomerId?: string | null;
+  sendViaEmail?: boolean;
+  sendViaWhatsapp?: boolean;
 }): string {
   const itemsPart = args.items.map(reviewLineSnapshot);
   const phoneDigits = digitsFromPhoneInput(args.customerPhone);
@@ -224,18 +231,52 @@ function buildReviewFormSnapshot(args: {
   };
   if (args.type === 'quote') {
     payload.customerCompany = args.customerCompany.trim();
+    payload.sendViaEmail = !!args.sendViaEmail;
+    payload.sendViaWhatsapp = !!args.sendViaWhatsapp;
   }
   return JSON.stringify(payload);
 }
 
+function initialQuoteSendPrefs(
+  docType: DocType,
+  ed: POSQuote | POSOrder | POSInvoice | null | undefined,
+  pf: POSDocCreateProps['prefill']
+): { email: boolean; wa: boolean } {
+  if (docType !== 'quote') return { email: true, wa: false };
+  const eq = ed as POSQuote | undefined;
+  if (eq?.id) {
+    const rawE = (eq as POSQuote & { send_via_email?: unknown }).send_via_email;
+    const rawW = (eq as POSQuote & { send_via_whatsapp?: unknown }).send_via_whatsapp;
+    return {
+      email: rawE === undefined || rawE === null ? true : rawE !== false && rawE !== 0,
+      wa: rawW === true || rawW === 1,
+    };
+  }
+  if (pf?.sendViaEmail != null || pf?.sendViaWhatsapp != null) {
+    return {
+      email: pf.sendViaEmail !== false,
+      wa: !!pf.sendViaWhatsapp,
+    };
+  }
+  if (pf?.websiteRequestId && (pf.notes ?? '').trim()) {
+    const p = parseQuoteRequestDeliveryPreferences(pf.notes);
+    return { email: p.sendViaEmail, wa: p.sendViaWhatsapp };
+  }
+  return { email: true, wa: false };
+}
+
 function buildBaselineFromEditDoc(type: DocType, doc: POSQuote | POSOrder | POSInvoice): string {
+  const q = type === 'quote' ? (doc as POSQuote) : null;
   return buildReviewFormSnapshot({
     type,
     items: doc.items || [],
     customerName: doc.customer_name || '',
     customerEmail: doc.customer_email || '',
     customerPhone: doc.customer_phone || '',
-    customerCompany: type === 'quote' ? (doc as POSQuote).customer_company || '' : '',
+    customerCompany:
+      type === 'quote' || type === 'order' || type === 'invoice'
+        ? ((doc as POSQuote | POSOrder | POSInvoice).customer_company ?? '') || ''
+        : '',
     notes: doc.notes || '',
     taxRate: doc.tax_rate ?? 0,
     discountInput:
@@ -243,6 +284,8 @@ function buildBaselineFromEditDoc(type: DocType, doc: POSQuote | POSOrder | POSI
         ? String(doc.discount_amount)
         : '',
     selectedCustomerId: doc.customer_id ? String(doc.customer_id) : null,
+    sendViaEmail: q ? q.send_via_email !== false : undefined,
+    sendViaWhatsapp: q ? !!(q.send_via_whatsapp === true || (q as any).send_via_whatsapp === 1) : undefined,
   });
 }
 
@@ -296,7 +339,14 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   });
   const [customerEmail, setCustomerEmail] = useState(editDoc?.customer_email || prefill?.customerEmail || '');
   const [customerPhone, setCustomerPhone] = useState(editDoc?.customer_phone || prefill?.customerPhone || '');
-  const [customerCompany, setCustomerCompany] = useState((editDoc as POSQuote)?.customer_company || prefill?.customerCompany || '');
+  const [customerCompany, setCustomerCompany] = useState(() => {
+    const co = (editDoc as POSQuote | POSOrder | POSInvoice | undefined)?.customer_company;
+    if (co != null && String(co).trim() !== '') return String(co).trim();
+    return prefill?.customerCompany || '';
+  });
+  const sendPrefsInit = initialQuoteSendPrefs(type, editDoc ?? null, prefill);
+  const [sendViaEmail, setSendViaEmail] = useState(sendPrefsInit.email);
+  const [sendViaWhatsApp, setSendViaWhatsApp] = useState(sendPrefsInit.wa);
   const [notes, setNotes] = useState(editDoc?.notes || prefill?.notes || '');
   const [taxRate, setTaxRate] = useState(editDoc?.tax_rate ?? 0);
   const [discountInput, setDiscountInput] = useState(() => {
@@ -581,6 +631,8 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         taxRate,
         discountInput,
         selectedCustomerId: selectedCustomer?.id ?? null,
+        sendViaEmail: type === 'quote' ? sendViaEmail : undefined,
+        sendViaWhatsapp: type === 'quote' ? sendViaWhatsApp : undefined,
       }),
     [
       type,
@@ -593,6 +645,8 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
       taxRate,
       discountInput,
       selectedCustomer?.id,
+      sendViaEmail,
+      sendViaWhatsApp,
     ]
   );
 
@@ -611,7 +665,19 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
     setCustomerSearch('');
   };
 
-  const handleSave = async (andPrint = false, andEmail = false, forCheckout = false): Promise<any | null> => {
+  const handleSave = async (opts?: {
+    andPrint?: boolean;
+    forCheckout?: boolean;
+    /** Quote: Save & Send (uses checkboxes). */
+    andSend?: boolean;
+    /** Order / Invoice: Save & Email Customer. */
+    andEmailCustomer?: boolean;
+  }): Promise<any | null> => {
+    const andPrint = opts?.andPrint ?? false;
+    const forCheckout = opts?.forCheckout ?? false;
+    const andSend = opts?.andSend ?? false;
+    const andEmailCustomer = opts?.andEmailCustomer ?? false;
+
     if (reviewLockedForPaidInvoice) {
       notify({
         variant: 'error',
@@ -624,12 +690,34 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
       notify({ variant: 'error', title: 'Add at least one product', subtitle: posDocWhere });
       return;
     }
-    if (andEmail && !isValidEmailFormatForForms(customerEmail)) {
+    if (andSend && type === 'quote') {
+      if (!sendViaEmail && !sendViaWhatsApp) {
+        notify({
+          variant: 'error',
+          title: 'Choose how to send',
+          subtitle: `${posDocWhere} — select Send via Email and/or Send via WhatsApp.`,
+        });
+        return;
+      }
+      if (sendViaEmail && !isValidEmailFormatForForms(customerEmail)) {
+        notify({ variant: 'error', title: 'Enter a valid email address', subtitle: posDocWhere });
+        return;
+      }
+      if (sendViaWhatsApp && digitsFromPhoneInput(customerPhone).length !== 10) {
+        notify({
+          variant: 'error',
+          title: 'Enter a valid phone for WhatsApp',
+          subtitle: `${posDocWhere} — 10-digit local number required.`,
+        });
+        return;
+      }
+    } else if (andEmailCustomer && !isValidEmailFormatForForms(customerEmail)) {
       notify({ variant: 'error', title: 'Enter a valid email address', subtitle: posDocWhere });
       return;
     }
     setSaving(true);
     const suppressSuccessToast = false;
+    let skipGenericSuccessNotify = false;
     let baselineUpdate: string | null = null;
     try {
       let customerId = selectedCustomer?.id;
@@ -707,6 +795,8 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             invoice_id: editQ?.invoice_id ?? null,
             email_sent_at: editQ?.email_sent_at ?? null,
             valid_until: editQ?.valid_until,
+            send_via_email: sendViaEmail,
+            send_via_whatsapp: sendViaWhatsApp,
           },
           saveOptsCheckout
         );
@@ -746,6 +836,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           {
             ...baseDoc,
             order_number: docNumber,
+            customer_company: customerCompany,
             customer_type: customerId ? 'registered' : 'visitor',
             status: orderStatus,
             quote_id: editO?.quote_id ?? null,
@@ -759,6 +850,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           {
             ...baseDoc,
             invoice_number: docNumber,
+            customer_company: customerCompany,
             status: editI?.status || INVOICE_STATUS_UNPAID,
             delivery_status: editI?.delivery_status || 'pending',
             order_id: editI?.order_id,
@@ -784,6 +876,8 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           taxRate,
           discountInput,
           selectedCustomerId: customerId ?? selectedCustomer?.id ?? null,
+          sendViaEmail: type === 'quote' ? sendViaEmail : undefined,
+          sendViaWhatsapp: type === 'quote' ? sendViaWhatsApp : undefined,
         });
       }
 
@@ -809,7 +903,12 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         });
       }
 
-      if (saved && andEmail && isValidEmailFormatForForms(customerEmail)) {
+      if (
+        saved &&
+        andEmailCustomer &&
+        type !== 'quote' &&
+        isValidEmailFormatForForms(customerEmail)
+      ) {
         const mailDoc: PrintDocProps = {
           type,
           docNumber,
@@ -831,7 +930,6 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         };
         const emailHtml = generateEmailHTML(mailDoc);
         let attachments: { filename: string; contentBase64: string }[] | undefined;
-        // Review pages skip PDF generation to keep Save & Email responsive on low-resource machines.
         if (!isReviewPage) {
           try {
             const pdf = await buildDocumentPdfBase64(mailDoc);
@@ -852,16 +950,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         });
 
         if (emailResult.success) {
-          if (type === 'quote' && saved) {
-            saved = await saveQuote(
-              {
-                ...(saved as POSQuote),
-                status: 'emailed',
-                email_sent_at: new Date().toISOString(),
-              },
-              { syncLinked: false, skipOrderGeneratedPromotion: true }
-            );
-          } else if (type === 'order' && saved) {
+          if (type === 'order' && saved) {
             const os = (saved as POSOrder).status;
             const orderInvoiceLocked: POSOrder['status'][] = [
               'invoice_generated_unpaid',
@@ -877,19 +966,10 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           notify({
             variant: 'success',
             title:
-              type === 'quote'
-                ? 'Quote saved and Email sent Successfully'
-                : type === 'order'
-                  ? 'Order saved and Email sent Successfully'
-                  : 'Invoice saved and Email sent Successfully',
+              type === 'order'
+                ? 'Order saved and Email sent Successfully'
+                : 'Invoice saved and Email sent Successfully',
           });
-          if (type === 'quote') {
-            const websiteRequestId =
-              prefill?.websiteRequestId || (saved as POSQuote | undefined)?.website_request_id;
-            if (websiteRequestId) {
-              await markQuoteRequestEmailSent(websiteRequestId);
-            }
-          }
         } else {
           notify({
             variant: 'error',
@@ -897,9 +977,144 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             subtitle: `${posDocWhere} — ${docNumber} was saved`,
           });
         }
+        onSave();
+        return saved;
+      }
+
+      if (saved && andSend && type === 'quote') {
+        skipGenericSuccessNotify = true;
+        let emailSent = false;
+        let waSent = false;
+        let emailErr: string | null = null;
+        let waErr: string | null = null;
+
+        if (sendViaEmail) {
+          const mailDoc: PrintDocProps = {
+            type: 'quote',
+            docNumber,
+            date: saved.created_at || new Date().toISOString(),
+            customerName,
+            customerEmail,
+            customerPhone,
+            customerCompany,
+            customerAccountNo: customerId || undefined,
+            items,
+            subtotal,
+            taxRate: gctPercentEffective,
+            taxAmount,
+            discountAmount,
+            total,
+            notes,
+            status: saved.status,
+            validUntil: (saved as POSQuote).valid_until,
+          };
+          const emailHtml = generateEmailHTML(mailDoc);
+          let attachments: { filename: string; contentBase64: string }[] | undefined;
+          if (!isReviewPage) {
+            try {
+              const pdf = await buildDocumentPdfBase64(mailDoc);
+              attachments = [{ filename: pdf.filename, contentBase64: pdf.base64 }];
+            } catch (pdfErr) {
+              console.error('PDF attachment failed:', pdfErr);
+            }
+          }
+          const emailResult = await sendEmail({
+            to: customerEmail,
+            toName: customerName,
+            subject: `Your Quote ${docNumber} from Voltz Industrial Supply`,
+            htmlBody: emailHtml,
+            documentType: 'quote',
+            documentId: saved.id,
+            documentNumber: docNumber,
+            attachments,
+          });
+          if (emailResult.success) {
+            emailSent = true;
+            saved = await saveQuote(
+              {
+                ...(saved as POSQuote),
+                status: 'emailed',
+                email_sent_at: new Date().toISOString(),
+              },
+              { syncLinked: false, skipOrderGeneratedPromotion: true }
+            );
+            const websiteRequestId =
+              prefill?.websiteRequestId || (saved as POSQuote | undefined)?.website_request_id;
+            if (websiteRequestId) {
+              await markQuoteRequestEmailSent(websiteRequestId);
+            }
+          } else {
+            emailErr = emailResult.error || 'Email could not be sent';
+          }
+        }
+
+        if (sendViaWhatsApp) {
+          const phoneDigits = digitsFromPhoneInput(customerPhone);
+          const qn = String((saved as POSQuote).quote_number || docNumber || '').trim();
+          if (phoneDigits.length !== 10) {
+            waErr = 'Enter a full 10-digit customer phone number.';
+          } else {
+            const productLines = items
+              .filter((i) => (i.product_name || '').trim() !== '')
+              .map((i) => `${(i.product_name || '').trim()} × ${Number(i.quantity) || 0}`)
+              .join(' • ');
+            const qtyTotal = items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+            const dateStr = fmtDatePOS((saved as POSQuote).created_at || new Date().toISOString());
+            const templateVars = {
+              customer_name: customerName.trim() || 'Customer',
+              quote_num: qn,
+              dateofquote: dateStr,
+              product: (productLines || '—').slice(0, 1024),
+              qty: String(qtyTotal),
+              cost_item: `$${fmtCurrency(subtotal)}`,
+              gct: `$${fmtCurrency(taxAmount)}`,
+              total: `$${fmtCurrency(total)}`,
+            };
+            const waBodyFallback = [
+              customerName.trim() ? `Hi ${customerName.trim()},` : 'Hello,',
+              qn ? `Your quote ${qn} from Voltz Industrial Supply is ready.` : 'Your quote from Voltz Industrial Supply is ready.',
+              'Thank you for your business.',
+            ].join(' ');
+            const wa = await sendQuoteWhatsAppNotification({
+              phoneDigits,
+              customerName: customerName.trim(),
+              quoteNumber: qn,
+              body: waBodyFallback,
+              templateVars,
+            });
+            if (wa.ok) {
+              waSent = true;
+            } else {
+              waErr = wa.error || 'WhatsApp send failed';
+            }
+          }
+        }
+
+        const okAny = (sendViaEmail && emailSent) || (sendViaWhatsApp && waSent);
+        const triedAny = sendViaEmail || sendViaWhatsApp;
+        const parts: string[] = [];
+        if (sendViaEmail) {
+          parts.push(emailSent ? 'Email sent' : `Email failed${emailErr ? `: ${emailErr}` : ''}`);
+        }
+        if (sendViaWhatsApp) {
+          parts.push(waSent ? 'WhatsApp sent' : `WhatsApp failed${waErr ? `: ${waErr}` : ''}`);
+        }
+        if (okAny) {
+          notify({
+            variant: 'success',
+            title: 'Quote saved',
+            subtitle: parts.length ? parts.join(' · ') : `${posDocWhere} — ${docNumber}`,
+          });
+        } else if (triedAny) {
+          notify({
+            variant: 'error',
+            title: 'Quote saved — sending had issues',
+            subtitle: parts.join(' · ') || `${posDocWhere} — ${docNumber}`,
+          });
+        }
+
         if (
-          emailResult.success &&
-          type === 'quote' &&
+          emailSent &&
           prefill?.websiteRequestId &&
           onAfterWebsiteQuoteEmailSuccess
         ) {
@@ -912,7 +1127,8 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
 
       if (
         !(forCheckout && type === 'quote' && prefill?.websiteRequestId) &&
-        !suppressSuccessToast
+        !suppressSuccessToast &&
+        !skipGenericSuccessNotify
       ) {
         notify({
           variant: 'success',
@@ -950,6 +1166,11 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
     : customers.slice(0, 10);
 
   const canSaveAndEmailCustomer = isValidEmailFormatForForms(customerEmail);
+  const canSaveAndSend =
+    type === 'quote' &&
+    (sendViaEmail || sendViaWhatsApp) &&
+    (!sendViaEmail || isValidEmailFormatForForms(customerEmail)) &&
+    (!sendViaWhatsApp || digitsFromPhoneInput(customerPhone).length === 10);
 
   if (loading) return <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-3 border-gray-200 border-t-[#e31e24] rounded-full animate-spin" /></div>;
 
@@ -1018,7 +1239,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             type="button"
             onClick={onBack}
             disabled={saving}
-            className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
             aria-busy={saving}
           >
             <ArrowLeft className="w-5 h-5" />
@@ -1055,7 +1276,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => handleSave(false, false)}
+            onClick={() => handleSave()}
             disabled={saving || reviewLockedForPaidInvoice || reviewIsClean}
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
           >
@@ -1302,10 +1523,13 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                 placeholder="Email Address"
               />
-              {type === 'quote' && (
-                <input type="text" value={customerCompany} onChange={e => setCustomerCompany(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Company" />
-              )}
+              <input
+                type="text"
+                value={customerCompany}
+                onChange={(e) => setCustomerCompany(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                placeholder="Company"
+              />
             </div>
 
             {/* Existing Customer Info */}
@@ -1333,13 +1557,36 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
               className="w-full px-3 py-2 border border-gray-200/90 rounded-xl text-sm resize-none bg-gray-50/70 focus:bg-white transition-colors" placeholder="Customer's message or special instructions..." />
           </div>
 
+          {type === 'quote' && (
+            <div className="flex flex-wrap gap-x-6 gap-y-2 px-0.5">
+              <label className="flex items-center gap-2 text-sm text-[#1a2332] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendViaWhatsApp}
+                  onChange={(e) => setSendViaWhatsApp(e.target.checked)}
+                  className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500/30"
+                />
+                <span>Send via WhatsApp</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-[#1a2332] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={sendViaEmail}
+                  onChange={(e) => setSendViaEmail(e.target.checked)}
+                  className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500/30"
+                />
+                <span>Send via Email</span>
+              </label>
+            </div>
+          )}
+
         </div>
 
         {/* Full-width action row — not inside the narrow sidebar column */}
         <div className="lg:col-span-3 flex items-center justify-end gap-2 min-w-0 pt-2">
           <button
             type="button"
-            onClick={() => handleSave(false, false, true)}
+            onClick={() => handleSave({ forCheckout: true })}
             disabled={saving || reviewLockedForPaidInvoice}
             className="flex items-center gap-2 px-4 py-2 bg-[#1a2332] text-white rounded-lg text-sm font-semibold hover:bg-[#0f1923] disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
           >
@@ -1347,20 +1594,31 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => handleSave(true, false)}
+            onClick={() => handleSave({ andPrint: true })}
             disabled={saving || reviewLockedForPaidInvoice}
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
           >
             <Printer className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Print'}
           </button>
-          <button
-            type="button"
-            onClick={() => handleSave(false, true)}
-            disabled={saving || !canSaveAndEmailCustomer || reviewLockedForPaidInvoice}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
-          >
-            <Send className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Email Customer'}
-          </button>
+          {type === 'quote' ? (
+            <button
+              type="button"
+              onClick={() => handleSave({ andSend: true })}
+              disabled={saving || !canSaveAndSend || reviewLockedForPaidInvoice}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            >
+              <Send className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Send'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => handleSave({ andEmailCustomer: true })}
+              disabled={saving || !canSaveAndEmailCustomer || reviewLockedForPaidInvoice}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            >
+              <Send className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Email Customer'}
+            </button>
+          )}
         </div>
       </div>
     </div>

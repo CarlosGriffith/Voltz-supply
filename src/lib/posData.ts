@@ -4,6 +4,7 @@ import { broadcastCMSUpdate } from '@/lib/cmsCache';
 import { fetchCustomProducts, updateProductStockCount } from '@/lib/cmsData';
 import { broadcastPOSChange, broadcastPOSCustomerRelatedTables } from '@/lib/posBroadcast';
 import { parseWebsiteQuoteRequestLines, categorySlugForWebsiteLine } from '@/lib/websiteQuoteRequestParse';
+import { parseQuoteRequestDeliveryPreferences } from '@/lib/quoteRequestDeliveryPrefs';
 
 /** POS list rows — same as {@link ensureArray}. */
 export const asPosRows = ensureArray;
@@ -105,6 +106,10 @@ export interface POSQuote {
   invoice_id?: string | null;
   /** Set when the quote is emailed to the customer from POS (Save + Email). */
   email_sent_at?: string | null;
+  /** Last saved POS preference: include email when using Save & Send. */
+  send_via_email?: boolean;
+  /** Last saved POS preference: include WhatsApp when using Save & Send. */
+  send_via_whatsapp?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +143,7 @@ export interface POSOrder {
   customer_name: string;
   customer_email: string;
   customer_phone: string;
+  customer_company: string;
   customer_type: 'visitor' | 'registered';
   status:
     | 'pending'
@@ -189,6 +195,7 @@ export interface POSInvoice {
   customer_name: string;
   customer_email: string;
   customer_phone: string;
+  customer_company: string;
   status: POSInvoiceStatus;
   payment_method?: string;
   delivery_status: 'pending' | 'ready' | 'delivered';
@@ -1126,6 +1133,47 @@ export async function markQuoteRequestEmailSent(id: string): Promise<boolean> {
   }
 }
 
+/** Sends a WhatsApp Cloud API message to the customer after Save & WhatsApp (quotes). */
+export async function sendQuoteWhatsAppNotification(params: {
+  phoneDigits: string;
+  customerName?: string;
+  quoteNumber?: string;
+  /** Plain-text fallback when no `WHATSAPP_QUOTE_TEMPLATE_NAME` is configured on the server. */
+  body?: string;
+  /**
+   * Named template variables for `parameter_format: named` WhatsApp templates (e.g. {{customer_name}}, {{quote_num}}).
+   * Keys must match the variable names in your approved template body.
+   */
+  templateVars?: Partial<{
+    customer_name: string;
+    quote_num: string;
+    dateofquote: string;
+    product: string;
+    qty: string;
+    cost_item: string;
+    gct: string;
+    total: string;
+  }>;
+}): Promise<{ ok: true; messageId?: string } | { ok: false; error: string }> {
+  const phoneDigits = String(params.phoneDigits || '').replace(/\D/g, '');
+  if (phoneDigits.length < 10) {
+    return { ok: false, error: 'A valid phone number is required to send WhatsApp.' };
+  }
+  try {
+    const res = await apiPost<{ ok?: boolean; messageId?: string }>('/api/pos/whatsapp/quote-notify', {
+      phoneDigits,
+      customerName: params.customerName || '',
+      quoteNumber: params.quoteNumber || '',
+      body: params.body || '',
+      templateVars: params.templateVars || {},
+    });
+    return { ok: true, messageId: res?.messageId };
+  } catch (e) {
+    const msg = e instanceof Error && e.message.trim() ? e.message : 'WhatsApp send failed';
+    return { ok: false, error: msg };
+  }
+}
+
 export async function fetchQuotes(): Promise<POSQuote[]> {
   try {
     const data = await apiGet<unknown>('/api/pos/quotes');
@@ -1134,6 +1182,8 @@ export async function fetchQuotes(): Promise<POSQuote[]> {
       items: sanitizeItems(r.items),
       subtotal: Number(r.subtotal) || 0, tax_rate: Number(r.tax_rate) || 0, tax_amount: Number(r.tax_amount) || 0,
       discount_amount: Number(r.discount_amount) || 0, total: Number(r.total) || 0,
+      send_via_email: r.send_via_email === 0 || r.send_via_email === false ? false : true,
+      send_via_whatsapp: r.send_via_whatsapp === 1 || r.send_via_whatsapp === true,
     }));
   } catch (e) {
     console.error('fetchQuotes:', e);
@@ -1172,6 +1222,8 @@ export async function saveQuote(q: Partial<POSQuote>, opts?: POSSaveOptions): Pr
     order_id: (q as any).order_id || null,
     invoice_id: (q as any).invoice_id || null,
     email_sent_at: q.email_sent_at ?? null,
+    send_via_email: q.send_via_email === false || q.send_via_email === 0 ? false : true,
+    send_via_whatsapp: q.send_via_whatsapp === true || q.send_via_whatsapp === 1,
   });
   assertSavedRow(data, 'quote');
   broadcastPOSChange('pos_quotes');
@@ -1193,6 +1245,7 @@ export async function fetchOrders(opts?: { bustCache?: boolean }): Promise<POSOr
     return asPosRows<any>(data).map((r) => ({
       ...r,
       items: sanitizeItems(r.items),
+      customer_company: r.customer_company ?? '',
       subtotal: Number(r.subtotal) || 0, tax_rate: Number(r.tax_rate) || 0, tax_amount: Number(r.tax_amount) || 0,
       discount_amount: Number(r.discount_amount) || 0, total: Number(r.total) || 0,
     }));
@@ -1210,6 +1263,7 @@ export async function saveOrder(o: Partial<POSOrder>, opts?: POSSaveOptions): Pr
     customer_name: o.customer_name || '',
     customer_email: o.customer_email || '',
     customer_phone: o.customer_phone || '',
+    customer_company: (o as Partial<POSOrder>).customer_company || '',
     customer_type: o.customer_type || 'visitor',
     status: o.status || 'reviewed',
     items: o.items || [],
@@ -1241,6 +1295,7 @@ export async function fetchInvoices(): Promise<POSInvoice[]> {
           return {
             ...r,
             status: normalizeInvoiceStatus(r?.status),
+            customer_company: r?.customer_company ?? '',
             items: sanitizeItems(r?.items),
             subtotal: Number(r.subtotal) || 0,
             tax_rate: Number(r.tax_rate) || 0,
@@ -1276,6 +1331,7 @@ export async function saveInvoice(inv: Partial<POSInvoice>, opts?: POSSaveOption
     customer_name: inv.customer_name || '',
     customer_email: inv.customer_email || '',
     customer_phone: inv.customer_phone || '',
+    customer_company: inv.customer_company || '',
     status: inv.status ? normalizeInvoiceStatus(String(inv.status)) : INVOICE_STATUS_UNPAID,
     payment_method: inv.payment_method || null,
     delivery_status: inv.delivery_status || 'pending',
@@ -1870,6 +1926,7 @@ export async function createStubQuoteFromWebsiteRequest(qr: POSQuoteRequest): Pr
               category: (qr.category || '').trim() || undefined,
             },
           ];
+    const delivery = parseQuoteRequestDeliveryPreferences(qr.message || '');
     const quote = await saveQuote(
       {
         quote_number: quoteNumber,
@@ -1888,6 +1945,8 @@ export async function createStubQuoteFromWebsiteRequest(qr: POSQuoteRequest): Pr
         discount_amount: 0,
         total: 0,
         notes: (qr.message || '').trim(),
+        send_via_email: delivery.sendViaEmail,
+        send_via_whatsapp: delivery.sendViaWhatsapp,
       },
       { syncLinked: true }
     );

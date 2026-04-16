@@ -259,7 +259,7 @@ const CMSCategoryManager: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
         <button
           type="button"
           onClick={() => (onBack ? onBack() : window.history.back())}
-          className="mt-1 p-2 rounded-lg hover:bg-gray-100 text-gray-600"
+          className="mt-1 p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
           aria-label="Back"
         >
           <ArrowLeft className="w-5 h-5" />

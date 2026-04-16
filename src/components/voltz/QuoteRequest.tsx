@@ -40,6 +40,20 @@ type ProductLine = {
   categoryLabel?: string;
 };
 
+/** Appended to stored quote-request message for admin quote notes. */
+function quoteDeliveryPreferenceLine(receiveByEmail: boolean, receiveByWhatsapp: boolean): string {
+  if (receiveByEmail && receiveByWhatsapp) {
+    return 'Customer Requested to Receive Quote by WhatsApp and Email';
+  }
+  if (receiveByWhatsapp) {
+    return 'Customer Requested to Receive Quote by WhatsApp';
+  }
+  if (receiveByEmail) {
+    return 'Customer requested to Receive Quote by Email';
+  }
+  return '';
+}
+
 function newLineRow(): ProductLine {
   const key =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -389,6 +403,8 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
     company: '',
     message: '',
   });
+  const [receiveQuoteByEmail, setReceiveQuoteByEmail] = useState(true);
+  const [receiveQuoteByWhatsapp, setReceiveQuoteByWhatsapp] = useState(false);
   const [lines, setLines] = useState<ProductLine[]>(() => {
     const row = newLineRow();
     if (initialProductName) row.productName = initialProductName;
@@ -441,13 +457,21 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
         setSubmitError('Please enter your email address.');
         return;
       }
+      const phoneDigits = digitsFromPhoneInput(formData.phone);
+      if (phoneDigits.length !== 10) {
+        setSubmitError('Please enter a valid 10-digit phone number.');
+        return;
+      }
+      if (!receiveQuoteByEmail && !receiveQuoteByWhatsapp) {
+        setSubmitError('Please choose how you would like to receive your quote (Email and/or WhatsApp).');
+        return;
+      }
       const nonempty = lines.filter((l) => l.productName.trim());
       if (nonempty.length === 0) {
         setSubmitError('Add at least one product (search the catalog or type a description).');
         return;
       }
-      const phoneDigits = digitsFromPhoneInput(formData.phone);
-      const phoneForSave = phoneDigits.length === 10 ? formatPhoneUsMask(phoneDigits) : formData.phone.trim();
+      const phoneForSave = formatPhoneUsMask(phoneDigits);
 
       const productPayload = nonempty
         .map((l, i) => {
@@ -467,6 +491,10 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
       ];
       const categoryPayload = categorySlugs.join(', ') || '';
 
+      const userMsg = formData.message.trim();
+      const deliveryLine = quoteDeliveryPreferenceLine(receiveQuoteByEmail, receiveQuoteByWhatsapp);
+      const messageForSave = [userMsg, deliveryLine].filter(Boolean).join('\n\n');
+
       const result = await saveQuoteRequest({
         name: formData.name.trim(),
         email: formData.email.trim(),
@@ -475,7 +503,7 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
         category: categoryPayload,
         product: productPayload,
         quantity: quantityPayload,
-        message: formData.message.trim(),
+        message: messageForSave,
         status: 'new',
       });
       if (!result.ok) {
@@ -514,6 +542,8 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
     setSubmitted(false);
     setSubmitError(null);
     setFormData({ name: '', email: '', phone: '', company: '', message: '' });
+    setReceiveQuoteByEmail(false);
+    setReceiveQuoteByWhatsapp(false);
     setLines([newLineRow()]);
   };
 
@@ -565,7 +595,7 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
 
       <div className="grid sm:grid-cols-2 gap-5">
         <div>
-          <label className="block text-sm font-semibold text-[#1a2332] mb-1.5">Phone Number</label>
+          <label className="block text-sm font-semibold text-[#1a2332] mb-1.5">Phone Number *</label>
           <input
             type="tel"
             inputMode="numeric"
@@ -754,15 +784,40 @@ const QuoteRequest: React.FC<QuoteRequestProps> = ({ isModal = false, onClose, i
         </button>
       </div>
 
-      <div>
-        <label className="block text-sm font-semibold text-[#1a2332] mb-1.5">Additional Details</label>
-        <textarea
-          value={formData.message}
-          onChange={(e) => handleChange('message', e.target.value)}
-          rows={4}
-          className="w-full px-4 py-3 rounded-xl border border-gray-200 outline-none focus:border-[#e31e24] focus:ring-2 focus:ring-[#e31e24]/10 transition-all text-[#1a2332] resize-none"
-          placeholder="Describe your requirements, specifications, or any questions..."
-        />
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-8">
+        <div className="w-full lg:w-1/2 lg:max-w-[50%] min-w-0 shrink-0">
+          <label className="block text-sm font-semibold text-[#1a2332] mb-1.5">Additional Details</label>
+          <textarea
+            value={formData.message}
+            onChange={(e) => handleChange('message', e.target.value)}
+            rows={4}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 outline-none focus:border-[#e31e24] focus:ring-2 focus:ring-[#e31e24]/10 transition-all text-[#1a2332] resize-none"
+            placeholder="Describe your requirements, specifications, or any questions..."
+          />
+        </div>
+        <div className="flex flex-col justify-center gap-3 lg:flex-1 lg:min-w-0 lg:border-l lg:border-gray-100 lg:pl-8">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">How should we send your quote?</p>
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
+            <label className="flex items-center gap-2.5 text-sm text-[#1a2332] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={receiveQuoteByWhatsapp}
+                onChange={(e) => setReceiveQuoteByWhatsapp(e.target.checked)}
+                className="rounded border-gray-300 text-[#e31e24] focus:ring-[#e31e24]/30"
+              />
+              <span>Send via WhatsApp</span>
+            </label>
+            <label className="flex items-center gap-2.5 text-sm text-[#1a2332] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={receiveQuoteByEmail}
+                onChange={(e) => setReceiveQuoteByEmail(e.target.checked)}
+                className="rounded border-gray-300 text-[#e31e24] focus:ring-[#e31e24]/30"
+              />
+              <span>Send via Email</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       {submitError ? (

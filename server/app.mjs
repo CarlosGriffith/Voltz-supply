@@ -18,6 +18,7 @@ import {
   ensurePosQuoteRequestsCustomerId,
 } from './db.mjs';
 import { initDiskUploadDirs, saveUploadedFile, sendUploadedFile } from './storage.mjs';
+import { resolveWhatsAppCloudCredentials } from './whatsapp-env.mjs';
 
 /** Used only for deliverability MX/A lookups — avoids broken OS stub resolvers (e.g. ECONNREFUSED on Windows dev). */
 const publicDnsForDeliverability = new Resolver();
@@ -589,12 +590,12 @@ app.get('/api/public/customers/email-exists', async (req, res) => {
       [name, email, phone, company, id]
     );
     await pool.query(
-      `UPDATE pos_orders SET customer_name=?, customer_email=?, customer_phone=?, updated_at=CURRENT_TIMESTAMP(3) WHERE customer_id=?`,
-      [name, email, phone, id]
+      `UPDATE pos_orders SET customer_name=?, customer_email=?, customer_phone=?, customer_company=?, updated_at=CURRENT_TIMESTAMP(3) WHERE customer_id=?`,
+      [name, email, phone, company, id]
     );
     await pool.query(
-      `UPDATE pos_invoices SET customer_name=?, customer_email=?, customer_phone=?, updated_at=CURRENT_TIMESTAMP(3) WHERE customer_id=?`,
-      [name, email, phone, id]
+      `UPDATE pos_invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_company=?, updated_at=CURRENT_TIMESTAMP(3) WHERE customer_id=?`,
+      [name, email, phone, company, id]
     );
     await pool.query(
       `UPDATE pos_receipts SET customer_name=?, updated_at=CURRENT_TIMESTAMP(3) WHERE customer_id=?`,
@@ -628,18 +629,18 @@ app.get('/api/public/customers/email-exists', async (req, res) => {
       [name, email, phone, company, oldP, oldE, oldE]
     );
     await pool.query(
-      `UPDATE pos_orders SET customer_name=?, customer_email=?, customer_phone=?, updated_at=CURRENT_TIMESTAMP(3)
+      `UPDATE pos_orders SET customer_name=?, customer_email=?, customer_phone=?, customer_company=?, updated_at=CURRENT_TIMESTAMP(3)
        WHERE customer_id IS NULL
        AND REGEXP_REPLACE(IFNULL(customer_phone,''), '[^0-9]+', '') = ?
        ${orphanEmailClause}`,
-      [name, email, phone, oldP, oldE, oldE]
+      [name, email, phone, company, oldP, oldE, oldE]
     );
     await pool.query(
-      `UPDATE pos_invoices SET customer_name=?, customer_email=?, customer_phone=?, updated_at=CURRENT_TIMESTAMP(3)
+      `UPDATE pos_invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_company=?, updated_at=CURRENT_TIMESTAMP(3)
        WHERE customer_id IS NULL
        AND REGEXP_REPLACE(IFNULL(customer_phone,''), '[^0-9]+', '') = ?
        ${orphanEmailClause}`,
-      [name, email, phone, oldP, oldE, oldE]
+      [name, email, phone, company, oldP, oldE, oldE]
     );
 
     try {
@@ -889,6 +890,178 @@ app.patch('/api/pos/quote-requests/:id', async (req, res) => {
   }
 });
 
+/**
+ * WhatsApp Cloud API — send a quote notification to the customer's WhatsApp number.
+ * Configure on the API host: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID.
+ * Optional: WHATSAPP_GRAPH_API_VERSION (default v21.0), WHATSAPP_QUOTE_TEMPLATE_NAME (+ WHATSAPP_QUOTE_TEMPLATE_LANGUAGE, comma-separated fallbacks).
+ * When WHATSAPP_QUOTE_TEMPLATE_NAME is set, sends a **named** body with:
+ * customer_name, quote_num, dateofquote, product, qty, cost_item, gct, total
+ * (must match a Meta template created with `parameter_format: named` and the same variable names).
+ * Multi-line product lists are sent in `product` as a single text block (newlines are normalized to ` • ` for API validation).
+ */
+app.post('/api/pos/whatsapp/quote-notify', async (req, res) => {
+  try {
+    const { token, phoneNumberId } = resolveWhatsAppCloudCredentials();
+    const rawVersion = (process.env.WHATSAPP_GRAPH_API_VERSION || 'v21.0').trim();
+    const version = rawVersion.startsWith('v') ? rawVersion : `v${rawVersion}`;
+
+    if (!token || !phoneNumberId) {
+      return res.status(503).json({
+        error:
+          'WhatsApp Cloud API is not configured. On the machine running the API (e.g. `npm run dev:api` or Render), set WHATSAPP_ACCESS_TOKEN (permanent token from Meta) and WHATSAPP_PHONE_NUMBER_ID (WhatsApp → API setup). Aliases also work: WHATSAPP_CLOUD_API_TOKEN, WHATSAPP_CLOUD_PHONE_NUMBER_ID. Add them to the project root `.env` and restart the API process.',
+      });
+    }
+
+    const { phoneDigits, customerName, quoteNumber, body, templateVars: tvIn } = req.body || {};
+    const digits = String(phoneDigits || '').replace(/\D/g, '');
+    if (digits.length < 10) {
+      return res.status(400).json({ error: 'phoneDigits must contain at least 10 digits.' });
+    }
+    let to = digits;
+    if (digits.length === 10) {
+      to = `1${digits}`;
+    }
+
+    const name = String(customerName || '').trim();
+    const qn = String(quoteNumber || '').trim();
+    const customBody = String(body || '').trim();
+    const defaultText =
+      customBody ||
+      [
+        name ? `Hi ${name},` : 'Hello,',
+        qn ? `Your quote ${qn} from Voltz Industrial Supply is ready.` : 'Your quote from Voltz Industrial Supply is ready.',
+        'Thank you for your business.',
+      ].join(' ');
+    const textBody = defaultText.slice(0, 4096);
+
+    const templateName = (process.env.WHATSAPP_QUOTE_TEMPLATE_NAME || '').trim();
+    /** Comma-separated list, e.g. `en_US,en` — Meta (#132001) often means locale mismatch; we try each until one works. */
+    let templateLangs = (process.env.WHATSAPP_QUOTE_TEMPLATE_LANGUAGE || 'en_US,en')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!templateLangs.length) templateLangs = ['en_US', 'en'];
+
+    const tv = tvIn && typeof tvIn === 'object' ? tvIn : {};
+    const clip = (s, max = 1024) => {
+      const t = String(s ?? '');
+      return t.length > max ? t.slice(0, max) : t;
+    };
+    const pick = (key, fallback) => {
+      const raw = tv[key];
+      if (raw != null && String(raw).trim() !== '') return clip(String(raw).trim());
+      return clip(fallback);
+    };
+
+    /** Meta (#132018) often rejects body vars with raw newlines / odd whitespace; keep single-line-ish text. */
+    const forTemplateBodyText = (s, max = 1024) => {
+      const t = String(s ?? '')
+        .replace(/\r\n|\r|\n/g, ' • ')
+        .replace(/\u2028|\u2029/g, ' ')
+        .trim();
+      return clip(t || '—', max);
+    };
+
+    /** Named body params — must match `parameter_format: named` in your Meta template (e.g. {{customer_name}}). */
+    const bodyParameters = templateName
+      ? [
+          { parameter_name: 'customer_name', text: forTemplateBodyText(pick('customer_name', name || 'Customer')) },
+          { parameter_name: 'quote_num', text: forTemplateBodyText(pick('quote_num', qn || '—')) },
+          { parameter_name: 'dateofquote', text: forTemplateBodyText(pick('dateofquote', '—')) },
+          { parameter_name: 'product', text: forTemplateBodyText(pick('product', '—')) },
+          { parameter_name: 'qty', text: forTemplateBodyText(pick('qty', '0')) },
+          { parameter_name: 'cost_item', text: forTemplateBodyText(pick('cost_item', '$0.00')) },
+          { parameter_name: 'gct', text: forTemplateBodyText(pick('gct', '$0.00')) },
+          { parameter_name: 'total', text: forTemplateBodyText(pick('total', '$0.00')) },
+        ].map((p) => ({
+          type: 'text',
+          parameter_name: p.parameter_name,
+          text: p.text,
+        }))
+      : null;
+
+    const buildTemplatePayload = (langCode) => ({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: langCode },
+        components: [
+          {
+            type: 'body',
+            parameters: bodyParameters,
+          },
+        ],
+      },
+    });
+
+    let graphPayload;
+    if (templateName) {
+      graphPayload = buildTemplatePayload(templateLangs[0]);
+    } else {
+      graphPayload = {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { preview_url: false, body: textBody },
+      };
+    }
+
+    const url = `https://graph.facebook.com/${encodeURIComponent(version)}/${encodeURIComponent(phoneNumberId)}/messages`;
+    const sendOnce = async (payload) => {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json().catch(() => ({}));
+      return { resp, json };
+    };
+
+    let lastPair = await sendOnce(graphPayload);
+    if (templateName && !lastPair.resp.ok) {
+      const code = lastPair.json?.error?.code;
+      if (code === 132001 && templateLangs.length > 1) {
+        for (let i = 1; i < templateLangs.length; i++) {
+          const lang = templateLangs[i];
+          console.warn(`[whatsapp] template locale ${templateLangs[i - 1]} failed (#132001), retrying with ${lang}`);
+          lastPair = await sendOnce(buildTemplatePayload(lang));
+          if (lastPair.resp.ok) break;
+          if (lastPair.json?.error?.code !== 132001) break;
+        }
+      }
+    }
+
+    const { resp, json } = lastPair;
+    if (!resp.ok) {
+      let msg =
+        (json && json.error && (json.error.message || json.error.error_user_msg || json.error)) ||
+        `WhatsApp API HTTP ${resp.status}`;
+      if (typeof msg !== 'string') msg = JSON.stringify(msg);
+      if (json?.error?.code === 132001) {
+        msg = `${msg} — In WhatsApp Manager → Message templates, copy the template Name and Language exactly. Set WHATSAPP_QUOTE_TEMPLATE_NAME and WHATSAPP_QUOTE_TEMPLATE_LANGUAGE (e.g. en_US,en to try both).`;
+      }
+      if (json?.error?.code === 132018) {
+        const hint =
+          'Ensure the template uses parameter_format: named with exactly these body names: customer_name, quote_num, dateofquote, product, qty, cost_item, gct, total. For multiple products, use one {{product}} variable for the full line list (not one variable per SKU).';
+        const data = json.error.error_data != null ? ` ${JSON.stringify(json.error.error_data)}` : '';
+        msg = `${msg}${data} — ${hint}`;
+      }
+      console.error('[whatsapp] Cloud API error', json);
+      return res.status(502).json({ error: msg });
+    }
+    const messageId = json?.messages?.[0]?.id;
+    res.json({ ok: true, messageId: messageId || undefined });
+  } catch (e) {
+    console.error('[whatsapp] quote-notify', e);
+    res.status(500).json({ error: e.message || 'WhatsApp send failed' });
+  }
+});
+
 app.post('/api/pos/quotes', async (req, res) => {
   try {
     const q = req.body;
@@ -940,6 +1113,8 @@ app.post('/api/pos/quotes', async (req, res) => {
       'order_id',
       'invoice_id',
       'email_sent_at',
+      'send_via_email',
+      'send_via_whatsapp',
     ];
     const vals = [
       q.quote_number ?? '',
@@ -963,6 +1138,8 @@ app.post('/api/pos/quotes', async (req, res) => {
       q.order_id ?? null,
       q.invoice_id ?? null,
       toMysqlDatetime3(q.email_sent_at ?? null),
+      q.send_via_email === false || q.send_via_email === 0 ? 0 : 1,
+      q.send_via_whatsapp === true || q.send_via_whatsapp === 1 ? 1 : 0,
     ];
     const placeholders = cols.map(() => '?').join(',');
     // MySQL 8.0.33+ deprecates VALUES(col) here; use row alias (INSERT ... VALUES (...) AS d)
@@ -999,6 +1176,7 @@ app.post('/api/pos/orders', async (req, res) => {
       'customer_name',
       'customer_email',
       'customer_phone',
+      'customer_company',
       'customer_type',
       'status',
       'items',
@@ -1017,6 +1195,7 @@ app.post('/api/pos/orders', async (req, res) => {
       o.customer_name ?? '',
       o.customer_email ?? '',
       o.customer_phone ?? '',
+      o.customer_company ?? '',
       o.customer_type ?? 'visitor',
       o.status ?? 'reviewed',
       typeof o.items === 'string' ? o.items : JSON.stringify(o.items || []),
@@ -1064,6 +1243,7 @@ app.post('/api/pos/invoices', async (req, res) => {
       'customer_name',
       'customer_email',
       'customer_phone',
+      'customer_company',
       'status',
       'payment_method',
       'delivery_status',
@@ -1086,6 +1266,7 @@ app.post('/api/pos/invoices', async (req, res) => {
       inv.customer_name ?? '',
       inv.customer_email ?? '',
       inv.customer_phone ?? '',
+      inv.customer_company ?? '',
       inv.status ?? 'Unpaid',
       inv.payment_method ?? null,
       inv.delivery_status ?? 'pending',
