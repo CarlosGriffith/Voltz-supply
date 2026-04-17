@@ -16,6 +16,7 @@ import {
   nextCustomerId,
   migrateLegacyCustomerIds,
   ensurePosQuoteRequestsCustomerId,
+  ensurePosCustomerCompanyColumns,
 } from './db.mjs';
 import { initDiskUploadDirs, saveUploadedFile, sendUploadedFile } from './storage.mjs';
 import { resolveWhatsAppCloudCredentials } from './whatsapp-env.mjs';
@@ -54,6 +55,19 @@ export function createApp(options = {}) {
     next();
   });
 
+  /** Ensure pos_quotes / pos_orders / pos_invoices have `customer_company` before any `/api` handler runs. */
+  app.use(async (req, res, next) => {
+    const p = typeof req.path === 'string' ? req.path : '';
+    if (!p.startsWith('/api')) return next();
+    try {
+      await posCustomerCompanySchemaReady;
+      next();
+    } catch (e) {
+      console.error('[api] posCustomerCompanySchemaReady', e);
+      res.status(500).json({ error: e?.message || 'Database setup failed' });
+    }
+  });
+
   /**
    * MySQL DATETIME(3) rejects ISO-8601 values like `2026-04-11T23:06:23.906Z` (T/Z).
    * Normalize to UTC `YYYY-MM-DD HH:mm:ss.SSS` for bound parameters.
@@ -75,6 +89,7 @@ export function createApp(options = {}) {
   }
 
   const quoteRequestsSchemaReady = ensurePosQuoteRequestsCustomerId(pool);
+  const posCustomerCompanySchemaReady = ensurePosCustomerCompanyColumns(pool);
 
   migrateLegacyCustomerIds(pool).then(
     (r) => {

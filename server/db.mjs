@@ -111,6 +111,34 @@ export function ensurePosQuoteRequestsCustomerId(pool) {
   return ensurePosQuoteRequestsCustomerIdPromise;
 }
 
+/** Older DBs may lack `customer_company` on POS document tables while API INSERT/UPDATE still references it. */
+let ensurePosCustomerCompanyColumnsPromise = null;
+
+export function ensurePosCustomerCompanyColumns(pool) {
+  if (!ensurePosCustomerCompanyColumnsPromise) {
+    ensurePosCustomerCompanyColumnsPromise = (async () => {
+      const stmts = [
+        'ALTER TABLE pos_quotes ADD COLUMN `customer_company` VARCHAR(512) NOT NULL DEFAULT \'\' AFTER `customer_phone`',
+        'ALTER TABLE pos_orders ADD COLUMN `customer_company` VARCHAR(512) NOT NULL DEFAULT \'\' AFTER `customer_phone`',
+        'ALTER TABLE pos_invoices ADD COLUMN `customer_company` VARCHAR(512) NOT NULL DEFAULT \'\' AFTER `customer_phone`',
+      ];
+      for (const sql of stmts) {
+        try {
+          await pool.query(sql);
+          const tbl = /^ALTER TABLE (\S+)/i.exec(sql)?.[1] ?? 'pos_*';
+          console.log(`[api] Added column ${tbl}.customer_company`);
+        } catch (e) {
+          const msg = e?.message || String(e);
+          if (/Duplicate column name/i.test(msg)) continue;
+          console.error('[api] ensurePosCustomerCompanyColumns', e);
+          throw e;
+        }
+      }
+    })();
+  }
+  return ensurePosCustomerCompanyColumnsPromise;
+}
+
 export async function migrateLegacyCustomerIds(pool) {
   const conn = await pool.getConnection();
   try {
