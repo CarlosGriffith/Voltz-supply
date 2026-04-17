@@ -64,6 +64,8 @@ import { generateEmailHTML } from '@/components/pos/POSPrintTemplate';
 import { buildQuotationDocumentHtml, buildQuotationPreviewSrcDoc } from './quotationHtml';
 import { buildReceiptPrintDocPropsForPreview } from '@/components/pos/receiptPreviewProps';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { usePosResizableTableLayout } from '@/hooks/usePosResizableTableLayout';
+import { PosResizableTableFrame } from '@/components/pos/PosResizableTableFrame';
 import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
 import {
   Dialog,
@@ -92,8 +94,16 @@ const fmtMoney = (n: number) => `$${fmtCurrency(n)}`;
 
 /** Default % widths for Items table columns (include, product, doc no., qty, price, total, remove). Must sum to 100. */
 const POS_ITEMS_TABLE_COL_DEFAULTS: readonly number[] = [4, 34, 14, 15, 12, 13, 8];
+/** Panel min sizes for react-resizable-panels — must match column order above. */
+const POS_ITEMS_TABLE_PANEL_MINS: readonly number[] = [4, 12, 8, 8, 8, 8, 6];
+/** Minimum table width (rem) + optional right-edge drag — horizontal scroll on narrow viewports. */
+const POS_CHECKOUT_ITEMS_BASE_MIN_WIDTH_REM = 52;
 
 const POS_CHECKOUT_WHERE = 'POS → Checkout';
+
+/** Resize handles — match Create Quote line items; disable drag hit targets on mobile for horizontal scroll. */
+const POS_CHECKOUT_ITEMS_RESIZE_HANDLE =
+  'w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group max-sm:pointer-events-none hover:bg-white/5';
 
 const TENDER_METHODS = ['cash', 'card', 'bank_transfer', 'cheque'] as const;
 type TenderMethod = (typeof TENDER_METHODS)[number];
@@ -1949,7 +1959,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
   const [lineItems, setLineItems] = useState<CheckoutLineItem[]>([]);
   /** Prior line snapshots for Items “Undo” (each entry is the state before one user edit). */
   const [lineItemsUndoStack, setLineItemsUndoStack] = useState<CheckoutLineItem[][]>([]);
-  const [itemsTableColLayout, setItemsTableColLayout] = useState<number[]>(() => [...POS_ITEMS_TABLE_COL_DEFAULTS]);
+  const checkoutItemsTable = usePosResizableTableLayout({
+    columnCount: 7,
+    defaultPercents: [...POS_ITEMS_TABLE_COL_DEFAULTS],
+    panelMins: POS_ITEMS_TABLE_PANEL_MINS,
+  });
   const [taxRate, setTaxRate] = useState(0);
   const [discountInput, setDiscountInput] = useState('');
   const hydrateKeyRef = useRef<string | null>(null);
@@ -2200,15 +2214,6 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
     () => Math.max(0, documentTotal - priorPaymentsSubtractSum),
     [documentTotal, priorPaymentsSubtractSum]
   );
-
-  const itemsTableGridTemplateColumns = useMemo(
-    () => itemsTableColLayout.map((w) => `${w}fr`).join(' '),
-    [itemsTableColLayout]
-  );
-
-  const onItemsTableLayout = useCallback((sizes: number[]) => {
-    setItemsTableColLayout(sizes);
-  }, []);
 
   const searchQ = searchQuery.trim().toLowerCase();
   const docNumbersInLines = useMemo(() => docNumbersInCheckoutLines(lineItems), [lineItems]);
@@ -3102,7 +3107,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       // Reset form for the next sale; receipt preview stays open until the user closes it.
       setLineItems([]);
       setLineItemsUndoStack([]);
-      setItemsTableColLayout([...POS_ITEMS_TABLE_COL_DEFAULTS]);
+      checkoutItemsTable.setColLayout([...POS_ITEMS_TABLE_COL_DEFAULTS]);
+      checkoutItemsTable.setExpandPx(0);
       setSearchQuery('');
       setShowSearch(false);
       setDiscountInput('');
@@ -3442,8 +3448,8 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
       </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-4">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           <div ref={customerDropdownRef} className={`${POS_SURFACE_RAISED} px-4 py-3 space-y-2`}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wider leading-none">Customer</p>
@@ -3534,7 +3540,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
               </div>
             </div>
 
-          <div className={`${POS_SURFACE_RAISED} overflow-hidden`}>
+          <div className={`${POS_SURFACE_RAISED} min-w-0 overflow-hidden`}>
             <div className="px-4 py-3 border-b border-gray-100 font-semibold text-[#1a2332] flex items-center justify-between gap-3 min-w-0">
               <span className="shrink-0">Items</span>
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 justify-end">
@@ -3575,125 +3581,129 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
               Adding quotes, orders, or invoices from search only links them to this checkout so you can pay more than one
               document in a single transaction — it does not change each document&apos;s balance until you complete payment.
             </p>
-            <div className="bg-[#1a2332] text-white px-4 py-2">
-              <PanelGroup
-                direction="horizontal"
-                className="w-full items-stretch min-h-0"
-                onLayout={onItemsTableLayout}
-                autoSaveId="pos-checkout-items-table"
-              >
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[0]}
-                  minSize={4}
-                  maxSize={4}
-                  id="pos-items-col-include"
-                  className="min-w-0 flex items-center"
-                >
-                  <div className="w-full flex items-center justify-center" title="Include in total">
-                    <span className="sr-only">Include in total</span>
-                  </div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[1]}
-                  minSize={12}
-                  id="pos-items-col-product"
-                  className="min-w-0 flex items-center"
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider truncate pr-1">Product</div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[2]}
-                  minSize={8}
-                  id="pos-items-col-doc"
-                  className="min-w-0 flex items-center justify-center"
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider w-full text-center">Doc No.</div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[3]}
-                  minSize={8}
-                  id="pos-items-col-qty"
-                  className="min-w-0 flex items-center justify-center"
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider">Qty</div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[4]}
-                  minSize={8}
-                  id="pos-items-col-price"
-                  className="min-w-0 flex items-center justify-end"
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider">Price</div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[5]}
-                  minSize={8}
-                  id="pos-items-col-total"
-                  className="min-w-0 flex items-center justify-end"
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider">Total</div>
-                </Panel>
-                <PanelResizeHandle
-                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
-                  title="Resize columns"
-                >
-                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/60" aria-hidden />
-                </PanelResizeHandle>
-                <Panel
-                  defaultSize={POS_ITEMS_TABLE_COL_DEFAULTS[6]}
-                  minSize={6}
-                  maxSize={12}
-                  id="pos-items-col-remove"
-                  className="min-w-0 flex items-center justify-end"
-                >
-                  <span className="sr-only">Row actions</span>
-                </Panel>
-              </PanelGroup>
-            </div>
-            {lineItems.length === 0 ? (
-              <div className="px-4 py-12 text-center text-gray-400 text-sm">
-                <Package className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                No items yet. Use the search bar above to add products or document lines.
-              </div>
-            ) : (
-              lineItems.map((item, idx) => {
+            <PosResizableTableFrame
+              table={checkoutItemsTable}
+              baseMinWidthRem={POS_CHECKOUT_ITEMS_BASE_MIN_WIDTH_REM}
+              edgeAriaLabel="Widen or narrow the checkout items table from the right edge"
+              edgeTitle="Drag right to widen the table; drag left to narrow"
+              stickyHeaderClassName="border-b border-[#1a2332] bg-[#1a2332] text-white"
+              scrollAreaClassName={cn(
+                'pos-doc-line-items-scroll w-full min-h-0 min-w-0 max-w-full overflow-auto overscroll-x-contain',
+                'max-h-[min(52dvh,26rem)] sm:max-h-[min(58dvh,34rem)]',
+              )}
+              rightEdgeClassName="hidden sm:flex"
+              outerClassName="rounded-none border-0 border-t border-gray-100 bg-transparent shadow-none"
+              header={
+                <>
+                  <PanelGroup
+                    ref={checkoutItemsTable.panelGroupRef}
+                    direction="horizontal"
+                    className="w-full items-stretch min-h-0 px-4 py-2 text-white"
+                    onLayout={checkoutItemsTable.onPanelLayout}
+                    autoSaveId="pos-checkout-items-table-v2"
+                  >
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[0]}
+                      minSize={4}
+                      maxSize={4}
+                      id="pos-items-col-include"
+                      className="min-w-0 flex items-center"
+                    >
+                      <div className="w-full flex items-center justify-center" title="Include in total">
+                        <span className="sr-only">Include in total</span>
+                      </div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[1]}
+                      minSize={12}
+                      id="pos-items-col-product"
+                      className="min-w-0 flex items-center"
+                    >
+                      <div className="truncate pr-1 text-xs font-semibold uppercase tracking-wider text-white">
+                        Product
+                      </div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[2]}
+                      minSize={8}
+                      id="pos-items-col-doc"
+                      className="min-w-0 flex items-center justify-center"
+                    >
+                      <div className="w-full text-center text-xs font-semibold uppercase tracking-wider text-white">Doc No.</div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[3]}
+                      minSize={8}
+                      id="pos-items-col-qty"
+                      className="min-w-0 flex items-center justify-center"
+                    >
+                      <div className="text-xs font-semibold uppercase tracking-wider text-white">Qty</div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[4]}
+                      minSize={8}
+                      id="pos-items-col-price"
+                      className="min-w-0 flex items-center justify-end"
+                    >
+                      <div className="text-xs font-semibold uppercase tracking-wider text-white">Price</div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[5]}
+                      minSize={8}
+                      id="pos-items-col-total"
+                      className="min-w-0 flex items-center justify-end"
+                    >
+                      <div className="text-xs font-semibold uppercase tracking-wider text-white">Total</div>
+                    </Panel>
+                    <PanelResizeHandle className={POS_CHECKOUT_ITEMS_RESIZE_HANDLE} title="Resize columns">
+                      <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-white/45" aria-hidden />
+                    </PanelResizeHandle>
+                    <Panel
+                      defaultSize={checkoutItemsTable.defaultPercents[6]}
+                      minSize={6}
+                      maxSize={12}
+                      id="pos-items-col-remove"
+                      className="min-w-0 flex items-center justify-end"
+                    >
+                      <span className="sr-only">Row actions</span>
+                    </Panel>
+                  </PanelGroup>
+                  <div
+                    className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-white/30"
+                    aria-hidden
+                  />
+                </>
+              }
+            >
+              {lineItems.length === 0 ? (
+                <div className="border-b border-gray-100 bg-white px-4 py-12 text-center text-sm text-gray-400">
+                  <Package className="mx-auto mb-2 h-10 w-10 opacity-30" />
+                  No items yet. Use the search bar above to add products or document lines.
+                </div>
+              ) : (
+                lineItems.map((item, idx) => {
                 const included = item.includeInTotal !== false;
                 const rowMuted = !included ? 'opacity-40' : '';
                 return (
                 <div
                   key={`${item.product_id}-${idx}`}
-                  className="px-4 py-3 grid gap-x-0 gap-y-1 items-center border-b border-gray-50 last:border-0"
-                  style={{ gridTemplateColumns: itemsTableGridTemplateColumns }}
+                  className="grid items-center gap-x-0 border-b border-gray-50 bg-white px-4 py-3 text-[13px] last:border-0 max-sm:min-h-0"
+                  style={{ gridTemplateColumns: checkoutItemsTable.gridTemplateColumns }}
                 >
                   <div className="flex w-full min-w-0 shrink-0 items-center justify-center self-center px-1">
                     <input
@@ -3713,7 +3723,9 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
                       </div>
                     )}
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-[#1a2332] truncate">{item.product_name}</p>
+                      <p className="text-sm font-semibold leading-snug text-[#1a2332] [overflow-wrap:anywhere] sm:truncate">
+                        {item.product_name}
+                      </p>
                       <p className="text-xs text-gray-400 truncate">
                         {(item.part_number || item.brand || '')}
                         {`  `}
@@ -3806,11 +3818,11 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
                     />
                   </div>
                   <div className={`text-right text-sm font-semibold tabular-nums px-1 ${rowMuted}`}>{fmtMoney(item.total)}</div>
-                  <div className={`flex justify-end pl-1 ${rowMuted}`}>
+                  <div className={`flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-1 ${rowMuted}`}>
                     <button
                       type="button"
                       onClick={() => removeItem(idx)}
-                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
+                      className="shrink-0 rounded-lg p-1.5 text-red-500 hover:bg-red-50"
                       title="Remove"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -3820,6 +3832,7 @@ const POSCheckout: React.FC<POSCheckoutProps> = ({
               );
               })
             )}
+            </PosResizableTableFrame>
 
             <div className="px-4 py-3 space-y-2 border-t border-gray-100 bg-gray-50/80">
               <div className="flex justify-between text-sm">

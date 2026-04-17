@@ -25,6 +25,7 @@
     "db:add-pos-quotes-status-before-dormant": "node scripts/run-add-pos-quotes-status-before-dormant.mjs",
     "db:add-email-sent-column": "node scripts/run-email-sent-migration.mjs",
     "db:add-quote-email-sent-at": "node scripts/run-add-pos-quotes-email-sent-at.mjs",
+    "db:add-pos-quotes-send-via-columns": "node scripts/run-pos-quotes-send-via-columns.mjs",
     "db:add-quote-status-order-generated": "node scripts/run-add-pos-quotes-status-order-generated.mjs",
     "db:backfill-quote-email-sent-at": "node scripts/run-backfill-pos-quotes-email-sent-at.mjs",
     "db:add-quote-number-column": "node scripts/run-quote-number-migration.mjs",

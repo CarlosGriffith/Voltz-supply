@@ -38,8 +38,16 @@ import {
 } from '@/lib/websiteQuoteRequestParse';
 import { parseQuoteRequestDeliveryPreferences } from '@/lib/quoteRequestDeliveryPrefs';
 import { POS_PAGE_MAX, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
+import { usePosResizableTableLayout } from '@/hooks/usePosResizableTableLayout';
+import { PosResizableTableFrame } from '@/components/pos/PosResizableTableFrame';
+import { PosDocLineItemsPanelHeader } from '@/components/pos/PosDocLineItemsPanelHeader';
 
 type DocType = 'quote' | 'order' | 'invoice';
+
+/** Line items table: Product, Qty, Price, Total, Actions — matches POS resizable + scroll pattern. */
+const POS_DOC_LINE_ITEMS_DEFAULT_PCT = [34, 16, 16, 18, 16];
+const POS_DOC_LINE_ITEMS_PANEL_MIN = [14, 9, 10, 9, 8] as const;
+const POS_DOC_LINE_ITEMS_BASE_MIN_REM = 40;
 
 /** Text + empty when zero (grey placeholder) + live `onCommit`; keeps `0.` while focused. */
 function LineUnitPriceInput({
@@ -263,6 +271,161 @@ function initialQuoteSendPrefs(
     return { email: p.sendViaEmail, wa: p.sendViaWhatsapp };
   }
   return { email: true, wa: false };
+}
+
+type POSDocLineItemsResizableSectionProps = {
+  docType: DocType;
+  items: POSLineItem[];
+  qtyInputDraft: Record<number, string | undefined>;
+  setQtyInputDraft: React.Dispatch<React.SetStateAction<Record<number, string | undefined>>>;
+  updateItemQty: (idx: number, qty: number) => void;
+  updateItemPrice: (idx: number, price: number) => void;
+  removeItem: (idx: number) => void;
+  clearQtyDraft: (idx: number) => void;
+};
+
+function POSDocLineItemsResizableSection({
+  docType,
+  items,
+  qtyInputDraft,
+  setQtyInputDraft,
+  updateItemQty,
+  updateItemPrice,
+  removeItem,
+  clearQtyDraft,
+}: POSDocLineItemsResizableSectionProps) {
+  const lineItemsTable = usePosResizableTableLayout({
+    columnCount: 5,
+    defaultPercents: [...POS_DOC_LINE_ITEMS_DEFAULT_PCT],
+    panelMins: POS_DOC_LINE_ITEMS_PANEL_MIN,
+  });
+
+  return (
+    <PosResizableTableFrame
+      table={lineItemsTable}
+      baseMinWidthRem={POS_DOC_LINE_ITEMS_BASE_MIN_REM}
+      edgeAriaLabel="Widen or narrow the line items table from the right edge"
+      edgeTitle="Drag right to widen the table; drag left to narrow"
+      stickyHeaderClassName="border-b border-[#1a2332] bg-[#1a2332]"
+      scrollAreaClassName={cn(
+        'pos-doc-line-items-scroll w-full min-h-0 min-w-0 max-w-full overflow-auto overscroll-x-contain',
+        'max-h-[min(52dvh,26rem)] sm:max-h-[min(58dvh,32rem)]',
+      )}
+      rightEdgeClassName="hidden sm:flex"
+      header={
+        <>
+          <PosDocLineItemsPanelHeader
+            table={lineItemsTable}
+            autoSaveId={`pos-doccreate-line-items-${docType}-v1`}
+          />
+          <div
+            className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-white/30"
+            aria-hidden
+          />
+        </>
+      }
+    >
+      {items.length === 0 ? (
+        <div className="border-b border-gray-100 bg-white px-4 py-12 text-center text-gray-400">
+          <Package className="mx-auto mb-2 h-10 w-10 opacity-30" />
+          <p className="text-sm">No products added yet. Search above to add products.</p>
+        </div>
+      ) : (
+        items.map((item, idx) => (
+          <div
+            key={`${item.product_id}-${idx}`}
+            className="grid gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70 max-sm:items-start sm:items-center"
+            style={{ gridTemplateColumns: lineItemsTable.gridTemplateColumns }}
+          >
+            <div className="flex min-w-0 items-center gap-3 px-3 py-3 pl-4">
+              {item.product_image ? (
+                <img
+                  src={resolveMediaUrl(item.product_image)}
+                  alt=""
+                  className="h-10 w-10 shrink-0 rounded-lg border object-cover"
+                />
+              ) : (
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-100">
+                  <Package className="h-4 w-4 text-gray-400" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="text-sm font-semibold leading-snug text-[#1a2332] [overflow-wrap:anywhere]">{item.product_name}</p>
+                <p className="truncate text-xs text-gray-400">{item.part_number || item.brand || ''}</p>
+              </div>
+            </div>
+            <div className="flex min-w-0 items-center justify-center gap-1 px-2 py-3">
+              <button
+                type="button"
+                onClick={() => {
+                  clearQtyDraft(idx);
+                  updateItemQty(idx, item.quantity - 1);
+                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200"
+              >
+                <Minus className="h-3 w-3" />
+              </button>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                aria-label={`Quantity for ${item.product_name}`}
+                value={qtyInputDraft[idx] !== undefined ? qtyInputDraft[idx]! : String(item.quantity)}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/[^\d]/g, '');
+                  setQtyInputDraft((d) => ({ ...d, [idx]: v }));
+                }}
+                onBlur={() => {
+                  setQtyInputDraft((prev) => {
+                    if (prev[idx] === undefined) return prev;
+                    const raw = prev[idx]!;
+                    const n = raw === '' ? NaN : parseInt(raw, 10);
+                    const final = Number.isNaN(n) || n < 1 ? 1 : n;
+                    updateItemQty(idx, final);
+                    const next = { ...prev };
+                    delete next[idx];
+                    return next;
+                  });
+                }}
+                className="w-12 rounded-md border border-gray-200 py-1 text-center text-sm font-semibold tabular-nums"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  clearQtyDraft(idx);
+                  updateItemQty(idx, item.quantity + 1);
+                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200"
+              >
+                <Plus className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="min-w-0 px-2 py-3 text-right">
+              <LineUnitPriceInput
+                key={`${idx}-${item.product_id}`}
+                unitPrice={item.unit_price}
+                onCommit={(n) => updateItemPrice(idx, n)}
+                className="inline-block w-20 rounded-md border border-gray-200 px-2 py-1 text-right text-sm font-semibold"
+              />
+            </div>
+            <div className="min-w-0 px-2 py-3 text-right text-sm font-bold tabular-nums text-[#1a2332]">
+              ${fmtCurrency(item.total)}
+            </div>
+            <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-3">
+              <button
+                type="button"
+                onClick={() => removeItem(idx)}
+                className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                aria-label="Remove line"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+    </PosResizableTableFrame>
+  );
 }
 
 function buildBaselineFromEditDoc(type: DocType, doc: POSQuote | POSOrder | POSInvoice): string {
@@ -1175,7 +1338,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
   if (loading) return <div className="flex items-center justify-center py-20"><div className="w-8 h-8 border-3 border-gray-200 border-t-[#e31e24] rounded-full animate-spin" /></div>;
 
   return (
-    <div className={`${POS_PAGE_MAX} space-y-6`}>
+    <div className={cn(POS_PAGE_MAX, 'min-w-0 space-y-6')}>
       {/* Website Quote Request Info Banner */}
       {isFromWebsite && prefill && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
@@ -1232,28 +1395,28 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         </div>
       )}
 
-      {/* Header — actions only in full-width row below the grid */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+      {/* Header — back + title left; Cancel / Save compact and right-aligned on mobile */}
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <button
             type="button"
             onClick={onBack}
             disabled={saving}
-            className="p-2 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="shrink-0 rounded-lg bg-gray-200 p-2 text-gray-600 transition-colors hover:bg-gray-300 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40"
             aria-busy={saving}
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="h-5 w-5" />
           </button>
-          <h2 className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-[#1a2332]">
+          <h2 className="flex min-w-0 flex-1 items-center gap-2 text-base font-bold leading-snug tracking-tight text-[#1a2332] sm:gap-2.5 sm:text-xl">
             <PosDocTitleFa kind={type} mode={editDoc ? 'review' : 'create'} />
-            <span className="min-w-0">
+            <span className="min-w-0 [overflow-wrap:anywhere] sm:whitespace-normal">
               {editDoc ? (
                 <>
                   Review {typeLabel}
                   {recordNumber ? (
                     <>
                       :{' '}
-                      <span className="text-[18px] font-bold leading-snug text-[#1a2332] tabular-nums">
+                      <span className="text-[17px] font-bold leading-snug text-[#1a2332] tabular-nums sm:text-[18px]">
                         {recordNumber}
                       </span>
                     </>
@@ -1265,12 +1428,12 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             </span>
           </h2>
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={onBack}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg text-sm font-semibold hover:bg-gray-900 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="rounded-md bg-black px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-gray-900 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:rounded-lg sm:px-4 sm:py-2 sm:text-sm"
           >
             Cancel
           </button>
@@ -1278,16 +1441,16 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
             type="button"
             onClick={() => handleSave()}
             disabled={saving || reviewLockedForPaidInvoice || reviewIsClean}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="flex items-center gap-1 rounded-md bg-blue-500 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:gap-2 sm:rounded-lg sm:px-4 sm:py-2 sm:text-sm"
           >
-            <CheckCircle className="w-4 h-4" /> {saving ? 'Saving...' : 'Save'}
+            <CheckCircle className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" /> {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-3">
         {/* Left: Product Search + Items */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           {/* Product Search */}
           <div className={POS_SEARCH_CARD}>
           <div ref={searchRef} className="relative flex gap-2 items-stretch">
@@ -1334,91 +1497,18 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
           </div>
           </div>
 
-          {/* Line Items Table */}
-          <div className={`${POS_SURFACE_RAISED} overflow-hidden`}>
-            <div className="bg-[#1a2332] text-white px-4 py-3 grid grid-cols-12 gap-2 text-xs font-semibold uppercase tracking-wider">
-              <div className="col-span-5">Product</div>
-              <div className="col-span-2 text-center">Qty</div>
-              <div className="col-span-2 text-right">Price</div>
-              <div className="col-span-2 text-right">Total</div>
-              <div className="col-span-1"></div>
-            </div>
-            {items.length === 0 ? (
-              <div className="px-4 py-12 text-center text-gray-400">
-                <Package className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                <p className="text-sm">No products added yet. Search above to add products.</p>
-              </div>
-            ) : items.map((item, idx) => (
-              <div key={idx} className="px-4 py-3 grid grid-cols-12 gap-2 items-center border-b border-gray-100 last:border-0">
-                <div className="col-span-5 flex items-center gap-3">
-                  {item.product_image ? <img src={resolveMediaUrl(item.product_image)} alt="" className="w-10 h-10 rounded-lg object-cover border" /> :
-                    <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center"><Package className="w-4 h-4 text-gray-400" /></div>}
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-[#1a2332] truncate">{item.product_name}</p>
-                    <p className="text-xs text-gray-400 truncate">{item.part_number || item.brand || ''}</p>
-                  </div>
-                </div>
-                <div className="col-span-2 flex items-center justify-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      clearQtyDraft(idx);
-                      updateItemQty(idx, item.quantity - 1);
-                    }}
-                    className="w-7 h-7 rounded-md bg-gray-100 flex items-center justify-center hover:bg-gray-200"
-                  >
-                    <Minus className="w-3 h-3" />
-                  </button>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    aria-label={`Quantity for ${item.product_name}`}
-                    value={qtyInputDraft[idx] !== undefined ? qtyInputDraft[idx]! : String(item.quantity)}
-                    onChange={(e) => {
-                      const v = e.target.value.replace(/[^\d]/g, '');
-                      setQtyInputDraft((d) => ({ ...d, [idx]: v }));
-                    }}
-                    onBlur={() => {
-                      setQtyInputDraft((prev) => {
-                        if (prev[idx] === undefined) return prev;
-                        const raw = prev[idx]!;
-                        const n = raw === '' ? NaN : parseInt(raw, 10);
-                        const final = Number.isNaN(n) || n < 1 ? 1 : n;
-                        updateItemQty(idx, final);
-                        const next = { ...prev };
-                        delete next[idx];
-                        return next;
-                      });
-                    }}
-                    className="w-12 text-center text-sm font-semibold border border-gray-200 rounded-md py-1 tabular-nums"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      clearQtyDraft(idx);
-                      updateItemQty(idx, item.quantity + 1);
-                    }}
-                    className="w-7 h-7 rounded-md bg-gray-100 flex items-center justify-center hover:bg-gray-200"
-                  >
-                    <Plus className="w-3 h-3" />
-                  </button>
-                </div>
-                <div className="col-span-2 text-right">
-                  <LineUnitPriceInput
-                    key={`${idx}-${item.product_id}`}
-                    unitPrice={item.unit_price}
-                    onCommit={(n) => updateItemPrice(idx, n)}
-                    className="w-20 text-right text-sm font-semibold border border-gray-200 rounded-md py-1 px-2"
-                  />
-                </div>
-                <div className="col-span-2 text-right text-sm font-bold text-[#1a2332]">${fmtCurrency(item.total)}</div>
-                <div className="col-span-1 text-right">
-                  <button onClick={() => removeItem(idx)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* Line items: resizable columns + horizontal scroll on narrow viewports (same pattern as Quote Requests). */}
+          <POSDocLineItemsResizableSection
+            key={type}
+            docType={type}
+            items={items}
+            qtyInputDraft={qtyInputDraft}
+            setQtyInputDraft={setQtyInputDraft}
+            updateItemQty={updateItemQty}
+            updateItemPrice={updateItemPrice}
+            removeItem={removeItem}
+            clearQtyDraft={clearQtyDraft}
+          />
 
           {/* Totals — payment note left of cost summary when prior payment exists */}
           <div className={`${POS_SURFACE_RAISED} p-4`}>
@@ -1468,7 +1558,7 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
         </div>
 
         {/* Right: Customer + Message from Customer */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {/* Customer Section */}
           <div className={`${POS_SURFACE_RAISED} p-4`}>
             <div className="flex items-center justify-between mb-3">
@@ -1582,41 +1672,81 @@ const POSDocCreate: React.FC<POSDocCreateProps> = ({
 
         </div>
 
-        {/* Full-width action row — not inside the narrow sidebar column */}
-        <div className="lg:col-span-3 flex items-center justify-end gap-2 min-w-0 pt-2">
+        {/* Full-width action row — mobile: 3 equal columns, compact single-line labels; lg+: right-aligned */}
+        <div className="grid w-full min-w-0 grid-cols-3 gap-1.5 pt-2 lg:col-span-3 lg:flex lg:w-auto lg:justify-end lg:gap-2">
           <button
             type="button"
             onClick={() => handleSave({ forCheckout: true })}
             disabled={saving || reviewLockedForPaidInvoice}
-            className="flex items-center gap-2 px-4 py-2 bg-[#1a2332] text-white rounded-lg text-sm font-semibold hover:bg-[#0f1923] disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="flex min-h-[2.5rem] min-w-0 items-center justify-center gap-0.5 rounded-lg bg-[#1a2332] px-1 py-2 text-[11px] font-semibold leading-none text-white hover:bg-[#0f1923] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1 sm:px-2 sm:text-xs lg:min-h-0 lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
           >
-            <CheckCircle className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Checkout'}
+            <CheckCircle className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+            <span className="text-center whitespace-nowrap">
+              {saving ? (
+                'Saving...'
+              ) : (
+                <>
+                  <span className="lg:hidden">Checkout</span>
+                  <span className="hidden lg:inline">Save & Checkout</span>
+                </>
+              )}
+            </span>
           </button>
           <button
             type="button"
             onClick={() => handleSave({ andPrint: true })}
             disabled={saving || reviewLockedForPaidInvoice}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+            className="flex min-h-[2.5rem] min-w-0 items-center justify-center gap-0.5 rounded-lg bg-blue-500 px-1 py-2 text-[11px] font-semibold leading-none text-white hover:bg-blue-600 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1 sm:px-2 sm:text-xs lg:min-h-0 lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
           >
-            <Printer className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Print'}
+            <Printer className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+            <span className="text-center whitespace-nowrap">
+              {saving ? (
+                'Saving...'
+              ) : (
+                <>
+                  <span className="lg:hidden">Print</span>
+                  <span className="hidden lg:inline">Save & Print</span>
+                </>
+              )}
+            </span>
           </button>
           {type === 'quote' ? (
             <button
               type="button"
               onClick={() => handleSave({ andSend: true })}
               disabled={saving || !canSaveAndSend || reviewLockedForPaidInvoice}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+              className="flex min-h-[2.5rem] min-w-0 items-center justify-center gap-0.5 rounded-lg bg-emerald-500 px-1 py-2 text-[11px] font-semibold leading-none text-white hover:bg-emerald-600 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1 sm:px-2 sm:text-xs lg:min-h-0 lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
             >
-              <Send className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Send'}
+              <Send className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              <span className="text-center whitespace-nowrap">
+                {saving ? (
+                  'Saving...'
+                ) : (
+                  <>
+                    <span className="lg:hidden">Send</span>
+                    <span className="hidden lg:inline">Save & Send</span>
+                  </>
+                )}
+              </span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => handleSave({ andEmailCustomer: true })}
               disabled={saving || !canSaveAndEmailCustomer || reviewLockedForPaidInvoice}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40 disabled:pointer-events-none disabled:cursor-not-allowed"
+              className="flex min-h-[2.5rem] min-w-0 items-center justify-center gap-0.5 rounded-lg bg-emerald-500 px-1 py-2 text-[11px] font-semibold leading-none text-white hover:bg-emerald-600 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 sm:gap-1 sm:px-2 sm:text-xs lg:min-h-0 lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
             >
-              <Send className="w-4 h-4" /> {saving ? 'Saving...' : 'Save & Email Customer'}
+              <Send className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              <span className="text-center whitespace-nowrap">
+                {saving ? (
+                  'Saving...'
+                ) : (
+                  <>
+                    <span className="lg:hidden">Email</span>
+                    <span className="hidden lg:inline">Save & Email Customer</span>
+                  </>
+                )}
+              </span>
             </button>
           )}
         </div>

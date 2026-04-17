@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 import { useNavigate } from 'react-router-dom';
+import { PosColumnResizeSuspendContext } from '@/contexts/PosColumnResizeSuspendContext';
 import { useCMSAuth } from '@/contexts/CMSAuthContext';
 import { useCMS, SectionConfig, loadContactDetails } from '@/contexts/CMSContext';
 import CMSProductManager from '@/components/voltz/CMSProductManager';
@@ -19,11 +20,17 @@ import {
 import { buildReceiptPrintDocPropsForPreview, buildRefundPrintDocProps } from '@/components/pos/receiptPreviewProps';
 import type { PrintDocProps } from '@/components/pos/posPrintTypes';
 import { POS_PAGE_SHELL, POS_QUICK_SEARCH_INPUT, POS_SEARCH_CARD, POS_SURFACE_RAISED } from '@/components/pos/posPageChrome';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { usePosResizableTableLayout } from '@/hooks/usePosResizableTableLayout';
+import { PosResizableTableFrame } from '@/components/pos/PosResizableTableFrame';
+import { DocListPanelHeader } from '@/components/pos/DocListPanelHeader';
+import { CustomersPanelHeader, RefundsPanelHeader, SentEmailsPanelHeader } from '@/components/pos/PosListPanelHeaders';
 
 import { parseQuoteRequestDeliveryPreferences } from '@/lib/quoteRequestDeliveryPrefs';
 import { getApiHealthDb } from '@/lib/api';
 import { broadcastCMSUpdate } from '@/lib/cmsCache';
 import {
+  cn,
   fmtCurrency,
   fmtDatePOS,
   safeNum,
@@ -71,14 +78,6 @@ import {
   Menu, ChevronLeft, Wifi, ArrowLeft,
 } from 'lucide-react';
 
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
@@ -108,13 +107,59 @@ import {
 
 const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/6995573664728a165adc7a9f_1772110039178_7206a7df.png';
 
-/** `<th>` count in first header row — keeps column widths stable on first paint (no layout flash). */
-const POS_TABLE_COLS_DOC: Record<'quote' | 'order' | 'invoice' | 'receipt', number> = {
-  quote: 7,
-  order: 6,
-  invoice: 6,
-  receipt: 8,
+/**
+ * Default column width weights for POS document lists (panel defaults before localStorage).
+ * Favor wider text columns (customer, product, email) and a usable actions column.
+ */
+const POS_DEFAULT_COL_PCT_DOC: Record<'quote' | 'order' | 'invoice' | 'receipt', number[]> = {
+  /** Quote #, Customer, Date, Total, Status, Email sent, Actions */
+  quote: [11, 22, 10, 10, 12, 25, 10],
+  /** Order #, Customer, Date, Total, Status, Actions */
+  order: [15, 26, 11, 12, 16, 20],
+  /** Invoice #, Customer, Date, Total, Status, Actions */
+  invoice: [15, 26, 11, 12, 16, 20],
+  /** Receipt #, Customer, Date, Payment method, Invoice(s) total, Amount received, Status, Actions */
+  receipt: [10, 18, 9, 15, 11, 11, 14, 12],
 };
+
+/** Website quote requests: Customer, Product, Date, Status, Email sent, Actions */
+const POS_DEFAULT_COL_PCT_QUOTE_REQUESTS = [28, 30, 7, 8, 19, 8];
+
+/** Min % width per panel (react-resizable-panels). */
+const POS_QUOTE_REQUESTS_PANEL_MIN = [8, 10, 5, 5, 8, 9] as const;
+
+/** Name, Contact, Company, Store credit, Balance due, Actions */
+const POS_DEFAULT_COL_PCT_CUSTOMERS = [20, 24, 18, 12, 14, 12];
+
+/** Refund #, Customer, Type, Amount, Date, Status, Actions */
+const POS_DEFAULT_COL_PCT_REFUNDS = [12, 22, 12, 12, 11, 15, 16];
+
+/** Recipient, Subject, Document, Sent, Status, Actions */
+const POS_DEFAULT_COL_PCT_SENT_EMAILS = [22, 28, 14, 14, 12, 10];
+
+/** Min panel % — document lists (quotes / orders / invoices / receipts). */
+const POS_DOC_PANEL_MIN: Record<'quote' | 'order' | 'invoice' | 'receipt', readonly number[]> = {
+  quote: [8, 9, 5, 6, 7, 9, 9],
+  order: [9, 11, 6, 6, 8, 9],
+  invoice: [9, 11, 6, 6, 8, 9],
+  receipt: [7, 9, 6, 8, 7, 7, 7, 9],
+};
+
+const POS_DOC_BASE_MIN_WIDTH_REM: Record<'quote' | 'order' | 'invoice' | 'receipt', number> = {
+  quote: 56,
+  order: 52,
+  invoice: 52,
+  receipt: 66,
+};
+
+const POS_CUSTOMERS_PANEL_MIN = [10, 10, 8, 7, 7, 9] as const;
+const POS_REFUNDS_PANEL_MIN = [8, 10, 7, 7, 6, 8, 9] as const;
+const POS_SENT_EMAILS_PANEL_MIN = [10, 12, 8, 8, 8, 9] as const;
+
+const POS_QUOTE_REQUESTS_BASE_MIN_WIDTH_REM = 52;
+const POS_CUSTOMERS_BASE_MIN_WIDTH_REM = 52;
+const POS_REFUNDS_BASE_MIN_WIDTH_REM = 56;
+const POS_SENT_EMAILS_BASE_MIN_WIDTH_REM = 52;
 
 // ─── Section Row (from original) ───
 const SectionRow: React.FC<{
@@ -256,9 +301,15 @@ function posQuoteWorkflowStatusLabel(status: string): string {
 }
 
 // ─── Status Badge ───
-const StatusBadge: React.FC<{ status: string; /** Quotes / quote requests: show `emailed` as "Sent". */ emailedAsSent?: boolean }> = ({
+const StatusBadge: React.FC<{
+  status: string;
+  /** Quotes / quote requests: show `emailed` as "Sent". */
+  emailedAsSent?: boolean;
+  className?: string;
+}> = ({
   status,
   emailedAsSent = false,
+  className,
 }) => {
   const colors: Record<string, string> = {
     draft: 'bg-gray-100 text-gray-600', new: 'bg-[#EF4444]/25 text-[#B91C1C]', sent: 'bg-blue-100 text-blue-700',
@@ -301,7 +352,17 @@ const StatusBadge: React.FC<{ status: string; /** Quotes / quote requests: show 
     partially_refunded: 'Partially Refunded',
   };
   const label = labels[status] || status;
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${colors[status] || 'bg-gray-100 text-gray-600'}`}>{label}</span>;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold',
+        colors[status] || 'bg-gray-100 text-gray-600',
+        className
+      )}
+    >
+      {label}
+    </span>
+  );
 };
 
 function isInvoiceGeneratedRowStatus(status: string): boolean {
@@ -490,7 +551,13 @@ const QuoteRequestQuotedStatusCell: React.FC<{
 }> = ({ qr, quoteList, onOpenQuote }) => {
   const status = qr.status || '';
   if (!LINKED_QUOTE_REQUEST_STATUSES.has((status || '').toLowerCase())) {
-    return <StatusBadge status={status} emailedAsSent />;
+    return (
+      <StatusBadge
+        status={status}
+        emailedAsSent
+        className="max-w-[min(11rem,100%)] whitespace-normal text-center leading-tight"
+      />
+    );
   }
   const linked = findQuoteForWebsiteRequest(qr, quoteList);
   const quoteNum = (linked?.quote_number || qr.quote_number || '').trim();
@@ -503,12 +570,16 @@ const QuoteRequestQuotedStatusCell: React.FC<{
           onClick={() => {
             if (quoteNum) onOpenQuote(quoteNum);
           }}
-          className={`inline-flex max-w-full rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
+          className={`inline-flex max-w-full min-w-0 justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#e31e24]/40 focus-visible:ring-offset-1 ${
             quoteNum ? 'cursor-pointer' : 'cursor-default opacity-90'
           }`}
           aria-label={quoteNum ? `Open ${quoteNum} on Quotes page` : 'Quote link unavailable'}
         >
-          <StatusBadge status={status} emailedAsSent />
+          <StatusBadge
+            status={status}
+            emailedAsSent
+            className="max-w-[min(11rem,100%)] whitespace-normal text-center leading-tight"
+          />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className={DOC_STATUS_TOOLTIP_CLASS}>
@@ -996,6 +1067,19 @@ function posQuoteToEmailPreviewProps(q: POSQuote): PrintDocProps {
   };
 }
 
+const SENT_EMAIL_EMPTY_BODY_FALLBACK = `<div style="padding:24px;font-family:Segoe UI,Tahoma,sans-serif;color:#64748b;font-size:14px;line-height:1.5">No HTML body is stored for this message. For newer sends, the full email appears here.</div>`;
+
+/** HTML for sent-email preview iframe and resend — stored body or rebuild from quote when missing. */
+function resolveSentEmailHtmlBody(e: POSSentEmail, quotes: POSQuote[]): string {
+  const stored = (e.html_body || '').trim();
+  if (stored) return stored;
+  if (e.document_type === 'quote' && e.document_id) {
+    const q = quotes.find((x) => x.id === e.document_id);
+    if (q) return generateEmailHTML(posQuoteToEmailPreviewProps(q));
+  }
+  return SENT_EMAIL_EMPTY_BODY_FALLBACK;
+}
+
 function posOrderToEmailPreviewProps(o: POSOrder): PrintDocProps {
   return {
     type: 'order',
@@ -1128,6 +1212,47 @@ const CMSDashboardInner: React.FC = () => {
   const [receiptsSearch, setReceiptsSearch] = useState('');
   const [refundsSearch, setRefundsSearch] = useState('');
   const [quoteRequestsSearch, setQuoteRequestsSearch] = useState('');
+  const quoteRequestsTable = usePosResizableTableLayout({
+    columnCount: 6,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_QUOTE_REQUESTS],
+    panelMins: POS_QUOTE_REQUESTS_PANEL_MIN,
+  });
+  const docQuoteTable = usePosResizableTableLayout({
+    columnCount: 7,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.quote],
+    panelMins: POS_DOC_PANEL_MIN.quote,
+  });
+  const docOrderTable = usePosResizableTableLayout({
+    columnCount: 6,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.order],
+    panelMins: POS_DOC_PANEL_MIN.order,
+  });
+  const docInvoiceTable = usePosResizableTableLayout({
+    columnCount: 6,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.invoice],
+    panelMins: POS_DOC_PANEL_MIN.invoice,
+  });
+  const docReceiptTable = usePosResizableTableLayout({
+    columnCount: 8,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.receipt],
+    panelMins: POS_DOC_PANEL_MIN.receipt,
+  });
+  const customersTable = usePosResizableTableLayout({
+    columnCount: 6,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_CUSTOMERS],
+    panelMins: POS_CUSTOMERS_PANEL_MIN,
+  });
+  const refundsTable = usePosResizableTableLayout({
+    columnCount: 7,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_REFUNDS],
+    panelMins: POS_REFUNDS_PANEL_MIN,
+  });
+  const sentEmailsTable = usePosResizableTableLayout({
+    columnCount: 6,
+    defaultPercents: [...POS_DEFAULT_COL_PCT_SENT_EMAILS],
+    panelMins: POS_SENT_EMAILS_PANEL_MIN,
+  });
+
   const viewQuotePopupHtml = useMemo(() => {
     if (!viewQuotePopup) return '';
     try {
@@ -1215,14 +1340,7 @@ const CMSDashboardInner: React.FC = () => {
   const [sentEmailPreview, setSentEmailPreview] = useState<POSSentEmail | null>(null);
   const sentEmailViewHtml = useMemo(() => {
     if (!sentEmailPreview) return '';
-    const e = sentEmailPreview;
-    const stored = (e.html_body || '').trim();
-    if (stored) return stored;
-    if (e.document_type === 'quote' && e.document_id) {
-      const q = quotes.find((x) => x.id === e.document_id);
-      if (q) return generateEmailHTML(posQuoteToEmailPreviewProps(q));
-    }
-    return `<div style="padding:24px;font-family:Segoe UI,Tahoma,sans-serif;color:#64748b;font-size:14px;line-height:1.5">No HTML body is stored for this message. For newer sends, the full email appears here.</div>`;
+    return resolveSentEmailHtmlBody(sentEmailPreview, quotes);
   }, [sentEmailPreview, quotes]);
 
   /** Latest successful send time per quote id (from sent-email log). */
@@ -1320,7 +1438,9 @@ const CMSDashboardInner: React.FC = () => {
     setCustomers, setQuotes, setOrders, setInvoices, setReceipts,
     setRefunds, setQuoteRequests, setSentEmails,
   }), []);
-  usePOSRealtime(realtimeSetters, true);
+  /** Skip POS polling / broadcast refreshes while resizing a table column (avoids janky drags). */
+  const posColumnResizeSuspendRef = useRef(false);
+  usePOSRealtime(realtimeSetters, true, { suspendRef: posColumnResizeSuspendRef });
 
   /** Keep History / edit-customer form in sync when `customers` refetches (store credit, balance). */
   useSyncSelectedCustomerFromList(customers, setSelectedCustomer);
@@ -1867,6 +1987,23 @@ const CMSDashboardInner: React.FC = () => {
             );
           });
 
+    const docTable =
+      docType === 'quote'
+        ? docQuoteTable
+        : docType === 'order'
+          ? docOrderTable
+          : docType === 'invoice'
+            ? docInvoiceTable
+            : docReceiptTable;
+    const docBaseRem = POS_DOC_BASE_MIN_WIDTH_REM[docType];
+    const docAutoSaveId =
+      docType === 'quote'
+        ? 'pos-doc-quote-panels-v1'
+        : docType === 'order'
+          ? 'pos-doc-order-panels-v1'
+          : docType === 'invoice'
+            ? 'pos-doc-invoice-panels-v1'
+            : 'pos-doc-receipt-panels-v1';
     return (
       <div className={POS_PAGE_SHELL}>
         {!embed && (
@@ -1926,100 +2063,55 @@ const CMSDashboardInner: React.FC = () => {
             </div>
           </div>
         )}
-        <Table
+        <PosResizableTableFrame
           key={`pos-doc-${docType}-${embed ? 'embed' : 'page'}`}
-          variant="pos"
-          compactRecords
-          resizable={{
-            storageKey: docType === 'receipt' ? 'pos-doc-receipt-v2' : `pos-doc-${docType}`,
-            columnCount: POS_TABLE_COLS_DOC[docType],
-          }}
+          table={docTable}
+          baseMinWidthRem={docBaseRem}
+          edgeAriaLabel="Widen or narrow the table from the right edge"
+          edgeTitle="Drag right to widen the table; drag left to narrow"
+          header={
+            <>
+              <DocListPanelHeader docType={docType} table={docTable} autoSaveId={docAutoSaveId} />
+              <div
+                className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
+                aria-hidden
+              />
+            </>
+          }
         >
-          <TableHeader>
-            <TableRow className="hover:!bg-transparent">
-              <TableHead
-                className={
-                  docType === 'receipt' ? 'min-w-[11rem]' : undefined
-                }
-              >
-                {docType === 'receipt'
-                  ? 'Receipt No.'
-                  : docType === 'quote'
-                    ? 'Quote No.'
-                    : docType === 'invoice'
-                      ? 'Invoice No.'
-                      : docType === 'order'
-                        ? 'Order No.'
-                        : '#'}
-              </TableHead>
-              <TableHead
-                className={
-                  docType === 'receipt' ? 'min-w-[9rem]' : undefined
-                }
-              >
-                Customer
-              </TableHead>
-              <TableHead
-                className={
-                  docType === 'receipt' ? 'min-w-[8rem]' : undefined
-                }
-              >
-                Date
-              </TableHead>
-              {docType === 'receipt' ? (
-                <>
-                  <TableHead className="text-left min-w-[9rem]">Payment Method</TableHead>
-                  <TableHead className="text-right tabular-nums">Invoice(s) Total</TableHead>
-                  <TableHead className="text-right">Amount Received</TableHead>
-                </>
-              ) : (
-                <TableHead className="text-right">Total</TableHead>
-              )}
-              <TableHead className="text-center">Status</TableHead>
-              {docType === 'quote' && <TableHead>Email Sent</TableHead>}
-              <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2" aria-hidden />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
             {filteredDocs.map((doc: any, rowIdx: number) => (
-              <TableRow key={doc?.id != null ? String(doc.id) : `${docType}-row-${rowIdx}`}>
-                <TableCell
-                  className={`font-semibold text-[#1a2332] ${docType === 'receipt' ? 'min-w-[11rem]' : ''}`}
-                >
-                  {doc[numKey]}
-                </TableCell>
-                <TableCell
-                  className={`text-gray-600 ${docType === 'receipt' ? 'min-w-[9rem]' : ''}`}
-                >
-                  {doc.customer_name || 'Visitor'}
-                </TableCell>
-                <TableCell
-                  className={
-                    docType === 'receipt'
-                      ? 'text-gray-500 min-w-[8rem] whitespace-nowrap'
-                      : 'text-gray-500'
-                  }
-                >
-                  {fmtDate(doc.created_at) || '—'}
-                </TableCell>
+              <div
+                key={doc?.id != null ? String(doc.id) : `${docType}-row-${rowIdx}`}
+                className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                style={{ gridTemplateColumns: docTable.gridTemplateColumns }}
+              >
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
+                  <span className="block truncate font-semibold text-[#1a2332]">{doc[numKey]}</span>
+                </div>
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
+                  <span className="block truncate">{doc.customer_name || 'Visitor'}</span>
+                </div>
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-2 text-left tabular-nums text-gray-500">
+                  <span className="block truncate whitespace-nowrap">{fmtDate(doc.created_at) || '—'}</span>
+                </div>
                 {docType === 'receipt' ? (
                   <>
-                    <TableCell className="text-gray-500 capitalize min-w-[9rem]">
-                      {(doc.payment_method || '—').replace('_', ' ')}
-                    </TableCell>
-                    <TableCell className="text-right font-bold tabular-nums">
-                      {fmtMoney(doc.total)}
-                    </TableCell>
-                    <TableCell className="text-right font-bold tabular-nums">
-                      {fmtMoney((doc as POSReceipt).amount_paid)}
-                    </TableCell>
+                    <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left capitalize text-gray-500">
+                      <span className="block truncate">{(doc.payment_method || '—').replace('_', ' ')}</span>
+                    </div>
+                    <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
+                      <span className="block truncate">{fmtMoney(doc.total)}</span>
+                    </div>
+                    <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
+                      <span className="block truncate">{fmtMoney((doc as POSReceipt).amount_paid)}</span>
+                    </div>
                   </>
                 ) : (
-                  <TableCell className="text-right font-bold tabular-nums">
-                    {fmtMoney(doc.total)}
-                  </TableCell>
+                  <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
+                    <span className="block truncate">{fmtMoney(doc.total)}</span>
+                  </div>
                 )}
-                <TableCell className="text-center">
+                <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5 [&_.inline-flex]:max-w-full">
                   {docType === 'quote' || docType === 'order' ? (
                     <QuoteOrderInvoiceStatusCell
                       doc={doc as POSQuote | POSOrder}
@@ -2051,23 +2143,24 @@ const CMSDashboardInner: React.FC = () => {
                   ) : (
                     <StatusBadge status={doc.status || doc.delivery_status || ''} />
                   )}
-                </TableCell>
+                </div>
                 {docType === 'quote' && (
-                  <TableCell className="text-gray-500 whitespace-nowrap">
-                    {(() => {
-                      const at = (doc as POSQuote).email_sent_at || quoteEmailSentAtByQuoteId.get(doc.id);
-                      return at ? fmtDate(at) : '—';
-                    })()}
-                  </TableCell>
+                  <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500 tabular-nums">
+                    <span className="block truncate whitespace-nowrap">
+                      {(() => {
+                        const at = (doc as POSQuote).email_sent_at || quoteEmailSentAtByQuoteId.get(doc.id);
+                        return at ? fmtDate(at) : '—';
+                      })()}
+                    </span>
+                  </div>
                 )}
-                <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle">
-                  <div className="flex items-center justify-end gap-1">
+                <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
                     {docType === 'quote' ? (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
-                            className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                            className="inline-flex shrink-0 items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
                           >
                             Actions
                             <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
@@ -2214,7 +2307,7 @@ const CMSDashboardInner: React.FC = () => {
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
-                            className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                            className="inline-flex shrink-0 items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
                           >
                             Actions
                             <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
@@ -2422,23 +2515,19 @@ const CMSDashboardInner: React.FC = () => {
                         </DropdownMenuContent>
                       </DropdownMenu>
                     )}
-                  </div>
-                </TableCell>
-              </TableRow>
+                </div>
+              </div>
             ))}
             {filteredDocs.length === 0 && (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={docType === 'receipt' ? 8 : docType === 'quote' ? 7 : 6} className="h-32 text-center text-gray-400">
+              <div className="flex h-32 w-full items-center justify-center border-b border-b-gray-100 bg-white px-4 text-center text-sm text-gray-400">
                   {embed
                     ? `No ${label.toLowerCase()} for this customer`
                     : q
                       ? `No matching ${label.toLowerCase()} found`
                       : `No ${label.toLowerCase()} found`}
-                </TableCell>
-              </TableRow>
+              </div>
             )}
-          </TableBody>
-        </Table>
+      </PosResizableTableFrame>
       </div>
     );
   };
@@ -2598,70 +2687,207 @@ const CMSDashboardInner: React.FC = () => {
           )}
         </DialogContent>
       </Dialog>
-      <Table
-        variant="pos"
-        compactRecords
-        resizable={{ storageKey: 'pos-quote-requests', columnCount: 6 }}
-        className="table-fixed"
+      {/*
+        Resizable columns: same structure as Checkout → Items table (react-resizable-panels + CSS grid rows).
+      */}
+      <PosResizableTableFrame
+        table={quoteRequestsTable}
+        baseMinWidthRem={POS_QUOTE_REQUESTS_BASE_MIN_WIDTH_REM}
+        edgeAriaLabel="Widen or narrow the table from the right edge"
+        edgeTitle="Drag right to widen the table; drag left to narrow"
+        header={
+          <>
+            <PanelGroup
+              ref={quoteRequestsTable.panelGroupRef}
+              direction="horizontal"
+              className="w-full items-stretch min-h-0"
+              onLayout={quoteRequestsTable.onPanelLayout}
+              autoSaveId="pos-quote-requests-panels-v3"
+            >
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[0]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[0]}
+                  id="pos-qr-col-customer"
+                  className="min-w-0 flex items-center"
+                >
+                  <div
+                    className={cn(
+                      'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+                      'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
+                    )}
+                  >
+                    Customer
+                  </div>
+                </Panel>
+                <PanelResizeHandle
+                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
+                  title="Resize columns"
+                >
+                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
+                </PanelResizeHandle>
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[1]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[1]}
+                  id="pos-qr-col-product"
+                  className="min-w-0 flex items-center"
+                >
+                  <div
+                    className={cn(
+                      'relative w-full px-3 py-2.5 pr-2 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+                      'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
+                    )}
+                  >
+                    Product
+                  </div>
+                </Panel>
+                <PanelResizeHandle
+                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
+                  title="Resize columns"
+                >
+                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
+                </PanelResizeHandle>
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[2]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[2]}
+                  id="pos-qr-col-date"
+                  className="min-w-0 flex items-center"
+                >
+                  <div
+                    className={cn(
+                      'relative w-full px-3 py-2.5 pl-2 text-xs font-medium text-gray-600 whitespace-nowrap',
+                      'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
+                    )}
+                  >
+                    Date
+                  </div>
+                </Panel>
+                <PanelResizeHandle
+                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
+                  title="Resize columns"
+                >
+                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
+                </PanelResizeHandle>
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[3]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[3]}
+                  id="pos-qr-col-status"
+                  className="min-w-0 flex items-center justify-center"
+                >
+                  <div
+                    className={cn(
+                      'relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1',
+                      'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
+                    )}
+                  >
+                    Status
+                  </div>
+                </Panel>
+                <PanelResizeHandle
+                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
+                  title="Resize columns"
+                >
+                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
+                </PanelResizeHandle>
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[4]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[4]}
+                  id="pos-qr-col-email"
+                  className="min-w-0 flex items-center"
+                >
+                  <div
+                    className={cn(
+                      'relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-sm:break-words max-sm:leading-snug sm:whitespace-nowrap',
+                      'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
+                    )}
+                  >
+                    Email Sent
+                  </div>
+                </Panel>
+                <PanelResizeHandle
+                  className="w-2 shrink-0 flex items-center justify-center cursor-col-resize outline-none group"
+                  title="Resize columns"
+                >
+                  <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
+                </PanelResizeHandle>
+                <Panel
+                  defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[5]}
+                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[5]}
+                  id="pos-qr-col-actions"
+                  className="min-w-0 flex items-center justify-center self-stretch"
+                >
+                  <span className="sr-only">Row actions</span>
+                  <div className="relative w-full px-2 py-2.5" aria-hidden />
+                </Panel>
+            </PanelGroup>
+            <div
+              className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
+              aria-hidden
+            />
+          </>
+        }
       >
-        <TableHeader>
-          <TableRow className="hover:!bg-transparent">
-            <TableHead>Customer</TableHead>
-            <TableHead className="!pr-2">Product</TableHead>
-            <TableHead className="!pl-2 w-[9.25rem]">Date</TableHead>
-            <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-left whitespace-nowrap min-w-[15rem] w-[15rem]">Email Sent</TableHead>
-            <TableHead className="text-right w-0 whitespace-nowrap p-1 px-1" aria-hidden />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {filteredQrRows.map((qr) => (
-            <TableRow key={qr.id}>
-              <TableCell>
-                <p className="font-semibold text-[#1a2332]">{qr.name}</p>
-                <p className="text-xs text-gray-400">{qr.email} {qr.phone && `| ${qr.phone}`}</p>
-                {qr.company && <p className="text-xs text-gray-400">{qr.company}</p>}
-              </TableCell>
-              <TableCell className="!pr-2">
-                <p className="text-inherit text-gray-800">{stripQuoteRequestProductQtyDisplay(qr.product || '')}</p>
-                <p className="text-xs text-gray-400">{qr.category}</p>
-                {qr.quantity && <p className="text-xs text-gray-400">Qty: {qr.quantity}</p>}
-              </TableCell>
-              <TableCell className="!pl-2 w-[9.25rem] whitespace-nowrap text-gray-500">
-                {fmtDatePOS(qr.created_at) || '—'}
-              </TableCell>
-              <TableCell className="text-center">
-                <QuoteRequestQuotedStatusCell qr={qr} quoteList={quotes} onOpenQuote={goToQuoteSearch} />
-              </TableCell>
-              <TableCell className="min-w-[15rem] w-[15rem] text-left text-gray-700 whitespace-nowrap">
-                {(() => {
-                  const linked = findQuoteForWebsiteRequest(qr, quotes);
-                  const rawAt =
-                    (qr.email_sent_at != null && String(qr.email_sent_at).trim() !== ''
-                      ? String(qr.email_sent_at)
-                      : '') ||
-                    (linked?.email_sent_at != null && String(linked.email_sent_at).trim() !== ''
-                      ? String(linked.email_sent_at)
-                      : '') ||
-                    (linked?.id ? quoteEmailSentAtByQuoteId.get(linked.id) : undefined);
-                  if (!rawAt) return <span className="text-gray-400">—</span>;
-                  const formatted = fmtDatePOS(rawAt);
-                  return formatted ? <span>{formatted}</span> : <span className="text-gray-400">—</span>;
-                })()}
-              </TableCell>
-              <TableCell className="w-0 p-1 px-1 text-right align-middle">
-                <div className="flex justify-end">
-                  <DropdownMenu>
+            {filteredQrRows.map((qr) => (
+              <div
+                key={qr.id}
+                className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                style={{ gridTemplateColumns: quoteRequestsTable.gridTemplateColumns }}
+              >
+                <div className="min-w-0 px-3 py-2.5 pl-4 max-sm:break-words max-sm:overflow-hidden">
+                  <p className="font-semibold text-[#1a2332] break-words [overflow-wrap:anywhere] leading-snug">
+                    {qr.name}
+                  </p>
+                  <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">
+                    {qr.email} {qr.phone && `| ${qr.phone}`}
+                  </p>
+                  {qr.company && (
+                    <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.company}</p>
+                  )}
+                </div>
+                <div className="min-w-0 px-3 py-2.5 pr-2 max-sm:break-words max-sm:overflow-hidden">
+                  <p className="text-inherit text-gray-800 break-words [overflow-wrap:anywhere] leading-snug">
+                    {stripQuoteRequestProductQtyDisplay(qr.product || '')}
+                  </p>
+                  <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.category}</p>
+                  {qr.quantity && <p className="text-xs text-gray-400">Qty: {qr.quantity}</p>}
+                </div>
+                <div className="min-w-0 whitespace-nowrap px-3 py-2.5 pl-2 text-gray-500">
+                  {fmtDatePOS(qr.created_at) || '—'}
+                </div>
+                <div className="min-w-0 px-3 py-2.5 text-center max-sm:overflow-hidden max-sm:px-1">
+                  <div className="flex justify-center max-sm:min-w-0 max-sm:px-0.5">
+                    <div className="flex min-w-0 max-w-full items-center justify-center">
+                      <QuoteRequestQuotedStatusCell qr={qr} quoteList={quotes} onOpenQuote={goToQuoteSearch} />
+                    </div>
+                  </div>
+                </div>
+                <div className="min-w-0 px-3 py-2.5 text-left text-gray-700 max-sm:break-words max-sm:leading-snug max-sm:overflow-hidden max-sm:whitespace-normal sm:whitespace-nowrap">
+                  {(() => {
+                    const linked = findQuoteForWebsiteRequest(qr, quotes);
+                    const rawAt =
+                      (qr.email_sent_at != null && String(qr.email_sent_at).trim() !== ''
+                        ? String(qr.email_sent_at)
+                        : '') ||
+                      (linked?.email_sent_at != null && String(linked.email_sent_at).trim() !== ''
+                        ? String(linked.email_sent_at)
+                        : '') ||
+                      (linked?.id ? quoteEmailSentAtByQuoteId.get(linked.id) : undefined);
+                    if (!rawAt) return <span className="text-gray-400">—</span>;
+                    const formatted = fmtDatePOS(rawAt);
+                    return formatted ? <span>{formatted}</span> : <span className="text-gray-400">—</span>;
+                  })()}
+                </div>
+                <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
+                    <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                        className="inline-flex max-w-full shrink-0 items-center gap-0.5 whitespace-nowrap rounded-lg bg-emerald-500 px-2 py-1 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600"
                       >
                         Actions
-                        <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-[10rem]">
+                    <DropdownMenuContent align="center" className="min-w-[10rem]">
                       {(() => {
                         const linkedQr = findQuoteForWebsiteRequest(qr, quotes);
                         const inv = linkedQr
@@ -2780,22 +3006,18 @@ const CMSDashboardInner: React.FC = () => {
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-              </TableCell>
-            </TableRow>
-          ))}
-          {filteredQrRows.length === 0 && (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-gray-400">
+              </div>
+            ))}
+            {filteredQrRows.length === 0 && (
+              <div className="flex h-32 items-center justify-center border-b border-b-gray-100 bg-white px-4 text-center text-sm text-gray-400">
                 {embed
                   ? 'No quote requests for this customer'
                   : quoteRequestsSearch.trim()
                     ? 'No matching quote requests found'
                     : 'No quote requests from the website yet'}
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
+              </div>
+            )}
+      </PosResizableTableFrame>
     </div>
   );
   };
@@ -3023,36 +3245,51 @@ const CMSDashboardInner: React.FC = () => {
         </div>
       )}
 
-      <Table variant="pos" compactRecords resizable={{ storageKey: 'pos-customers', columnCount: 6 }}>
-        <TableHeader>
-          <TableRow className="hover:!bg-transparent">
-            <TableHead>Name</TableHead>
-            <TableHead>Contact</TableHead>
-            <TableHead>Company</TableHead>
-            <TableHead className="text-right">Store credit</TableHead>
-            <TableHead className="text-right pr-10">Balance due</TableHead>
-            <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2 -translate-x-3" aria-hidden />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+      <PosResizableTableFrame
+        table={customersTable}
+        baseMinWidthRem={POS_CUSTOMERS_BASE_MIN_WIDTH_REM}
+        edgeAriaLabel="Widen or narrow the table from the right edge"
+        edgeTitle="Drag right to widen the table; drag left to narrow"
+        header={
+          <>
+            <CustomersPanelHeader table={customersTable} autoSaveId="pos-customers-panels-v1" />
+            <div
+              className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
+              aria-hidden
+            />
+          </>
+        }
+      >
           {displayCustomers.map((c) => (
-            <TableRow key={c.id}>
-              <TableCell className="font-semibold text-[#1a2332]">{c.name}</TableCell>
-              <TableCell className="text-gray-500">{c.phone}{c.email && ` | ${c.email}`}</TableCell>
-              <TableCell className="text-gray-500">{c.company || '-'}</TableCell>
-              <TableCell className="text-right font-semibold tabular-nums text-green-800">
-                {fmtMoney(c.store_credit || 0)}
-              </TableCell>
-              <TableCell className="text-right font-semibold tabular-nums text-amber-800 pr-10">
-                {(c.account_balance ?? 0) > 0 ? fmtMoney(c.account_balance ?? 0) : '—'}
-              </TableCell>
-              <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle -translate-x-3">
-                <div className="flex items-center justify-end gap-1">
+            <div
+              key={c.id}
+              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              style={{ gridTemplateColumns: customersTable.gridTemplateColumns }}
+            >
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
+                <span className="block truncate font-semibold text-[#1a2332]">{c.name}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
+                <span className="block truncate">
+                  {c.phone}
+                  {c.email && ` | ${c.email}`}
+                </span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
+                <span className="block truncate">{c.company || '-'}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-semibold tabular-nums text-green-800">
+                <span className="block truncate">{fmtMoney(c.store_credit || 0)}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 pr-10 text-right font-semibold tabular-nums text-amber-800">
+                <span className="block truncate">{(c.account_balance ?? 0) > 0 ? fmtMoney(c.account_balance ?? 0) : '—'}</span>
+              </div>
+              <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                        className="inline-flex shrink-0 items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
                       >
                         Actions
                         <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
@@ -3104,17 +3341,15 @@ const CMSDashboardInner: React.FC = () => {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                </div>
-              </TableCell>
-            </TableRow>
+              </div>
+            </div>
           ))}
           {displayCustomers.length === 0 && (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-gray-400">No customers yet</TableCell>
-            </TableRow>
+            <div className="flex h-32 w-full items-center justify-center border-b border-b-gray-100 bg-white px-4 text-center text-sm text-gray-400">
+              No customers yet
+            </div>
           )}
-        </TableBody>
-      </Table>
+      </PosResizableTableFrame>
 
       <Dialog open={customerPendingDelete != null} onOpenChange={(open) => { if (!open) setCustomerPendingDelete(null); }}>
         <DialogContent className="sm:max-w-md">
@@ -3262,34 +3497,51 @@ const CMSDashboardInner: React.FC = () => {
       </div>
       </>
       )}
-      <Table variant="pos" compactRecords resizable={{ storageKey: 'pos-refunds', columnCount: 7 }}>
-        <TableHeader>
-          <TableRow className="hover:!bg-transparent">
-            <TableHead>Refund No.</TableHead>
-            <TableHead>Customer</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead className="text-right">Amount</TableHead>
-            <TableHead>Date</TableHead>
-            <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-right w-0 whitespace-nowrap py-1.5 pl-1 !pr-2" aria-hidden />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+      <PosResizableTableFrame
+        table={refundsTable}
+        baseMinWidthRem={POS_REFUNDS_BASE_MIN_WIDTH_REM}
+        edgeAriaLabel="Widen or narrow the table from the right edge"
+        edgeTitle="Drag right to widen the table; drag left to narrow"
+        header={
+          <>
+            <RefundsPanelHeader table={refundsTable} autoSaveId="pos-refunds-panels-v1" />
+            <div
+              className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
+              aria-hidden
+            />
+          </>
+        }
+      >
           {filtered.map(r => (
-            <TableRow key={r.id}>
-              <TableCell className="font-semibold text-[#1a2332]">{displayRefundDocNumber(r.refund_number)}</TableCell>
-              <TableCell>{r.customer_name || '-'}</TableCell>
-              <TableCell className="capitalize">{r.refund_type.replace('_', ' ')}</TableCell>
-              <TableCell className="text-right font-bold text-red-600 tabular-nums">{fmtMoney(r.total)}</TableCell>
-              <TableCell className="text-gray-500">{fmtDate(r.created_at)}</TableCell>
-              <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
-              <TableCell className="w-0 py-1.5 pl-1 !pr-2 text-right align-middle">
-                <div className="flex items-center justify-end gap-1">
+            <div
+              key={r.id}
+              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              style={{ gridTemplateColumns: refundsTable.gridTemplateColumns }}
+            >
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
+                <span className="block truncate font-semibold text-[#1a2332]">{displayRefundDocNumber(r.refund_number)}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
+                <span className="block truncate">{r.customer_name || '-'}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left capitalize text-gray-600">
+                <span className="block truncate">{r.refund_type.replace('_', ' ')}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums text-red-600">
+                <span className="block truncate">{fmtMoney(r.total)}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left tabular-nums text-gray-500">
+                <span className="block truncate whitespace-nowrap">{fmtDate(r.created_at)}</span>
+              </div>
+              <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5">
+                <StatusBadge status={r.status} />
+              </div>
+              <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                        className="inline-flex shrink-0 items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
                       >
                         Actions
                         <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
@@ -3309,23 +3561,19 @@ const CMSDashboardInner: React.FC = () => {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                </div>
-              </TableCell>
-            </TableRow>
+              </div>
+            </div>
           ))}
           {filtered.length === 0 && (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={7} className="h-32 text-center text-gray-400">
+            <div className="flex h-32 w-full items-center justify-center border-b border-b-gray-100 bg-white px-4 text-center text-sm text-gray-400">
                 {rows.length === 0
                   ? embed
                     ? 'No refunds for this customer'
                     : 'No refunds yet'
                   : 'No matches — try a different search'}
-              </TableCell>
-            </TableRow>
+            </div>
           )}
-        </TableBody>
-      </Table>
+      </PosResizableTableFrame>
       <Dialog open={viewRefundPopup != null} onOpenChange={(open) => { if (!open) setViewRefundPopup(null); }}>
         <DialogContent
           hideClose
@@ -3449,7 +3697,7 @@ const CMSDashboardInner: React.FC = () => {
                       to: e.recipient_email,
                       toName: e.recipient_name,
                       subject: e.subject,
-                      htmlBody: e.html_body || sentEmailViewHtml,
+                      htmlBody: resolveSentEmailHtmlBody(e, quotes),
                       documentType: e.document_type,
                       documentId: e.document_id,
                       documentNumber: e.document_number,
@@ -3470,51 +3718,97 @@ const CMSDashboardInner: React.FC = () => {
           )}
         </DialogContent>
       </Dialog>
-      <Table variant="pos" resizable={{ storageKey: 'pos-sent-emails', columnCount: 6 }}>
-        <TableHeader>
-          <TableRow className="hover:!bg-transparent">
-            <TableHead>Recipient</TableHead>
-            <TableHead>Subject</TableHead>
-            <TableHead>Document</TableHead>
-            <TableHead>Sent</TableHead>
-            <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+      <PosResizableTableFrame
+        table={sentEmailsTable}
+        baseMinWidthRem={POS_SENT_EMAILS_BASE_MIN_WIDTH_REM}
+        edgeAriaLabel="Widen or narrow the table from the right edge"
+        edgeTitle="Drag right to widen the table; drag left to narrow"
+        header={
+          <>
+            <SentEmailsPanelHeader table={sentEmailsTable} autoSaveId="pos-sent-emails-panels-v1" />
+            <div
+              className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
+              aria-hidden
+            />
+          </>
+        }
+      >
           {rows.map(e => (
-            <TableRow key={e.id}>
-              <TableCell>
-                <p className="font-semibold text-[#1a2332]">{e.recipient_name || e.recipient_email}</p>
-                <p className="text-xs text-gray-400">{e.recipient_email}</p>
-              </TableCell>
-              <TableCell className="max-w-xs truncate text-gray-600">{e.subject}</TableCell>
-              <TableCell className="text-gray-500">
-                {formatSentEmailDocumentDisplay(e.document_type, e.document_number) || '-'}
-              </TableCell>
-              <TableCell className="text-gray-500">{fmtDate(e.sent_at)}</TableCell>
-              <TableCell className="text-center"><StatusBadge status={e.status} /></TableCell>
-              <TableCell className="text-right">
-                <button
-                  type="button"
-                  onClick={() => setSentEmailPreview(e)}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold shadow-sm hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
-                >
-                  <PosActionsFa icon={POS_MENU_FA.view} className="!text-white" />
-                  View
-                </button>
-              </TableCell>
-            </TableRow>
+            <div
+              key={e.id}
+              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              style={{ gridTemplateColumns: sentEmailsTable.gridTemplateColumns }}
+            >
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
+                <p className="truncate font-semibold leading-snug text-[#1a2332]">{e.recipient_name || e.recipient_email}</p>
+                <p className="truncate text-xs leading-snug text-gray-400">{e.recipient_email}</p>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
+                <span className="block truncate">{e.subject}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
+                <span className="block truncate">{formatSentEmailDocumentDisplay(e.document_type, e.document_number) || '-'}</span>
+              </div>
+              <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left tabular-nums text-gray-500">
+                <span className="block truncate whitespace-nowrap">{fmtDate(e.sent_at)}</span>
+              </div>
+              <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5">
+                <StatusBadge status={e.status} />
+              </div>
+              <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex shrink-0 items-center gap-0.5 px-2 py-1 bg-emerald-500 text-white rounded-lg text-xs font-semibold hover:bg-emerald-600 shadow-sm"
+                    >
+                      Actions
+                      <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[11rem]">
+                    <DropdownMenuItem className="gap-2" onClick={() => setSentEmailPreview(e)}>
+                      <PosActionsFa icon={POS_MENU_FA.view} />
+                      View Email
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="gap-2"
+                      onClick={async () => {
+                        const result = await sendEmail({
+                          to: e.recipient_email,
+                          toName: e.recipient_name,
+                          subject: e.subject,
+                          htmlBody: resolveSentEmailHtmlBody(e, quotes),
+                          documentType: e.document_type,
+                          documentId: e.document_id,
+                          documentNumber: e.document_number,
+                        });
+                        if (result.success) {
+                          notify({ variant: 'success', title: 'Email sent', subtitle: 'POS → Sent Emails' });
+                          await loadData();
+                        } else {
+                          notify({
+                            variant: 'error',
+                            title: 'Email not sent',
+                            subtitle: `POS → Sent Emails — ${result.error || 'Error'}`,
+                          });
+                        }
+                      }}
+                    >
+                      <Send className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />
+                      Resend Email
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
           ))}
           {rows.length === 0 && (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-32 text-center text-gray-400">
+            <div className="flex h-32 w-full items-center justify-center border-b border-b-gray-100 bg-white px-4 text-center text-sm text-gray-400">
                 {embed ? 'No sent emails for this customer' : 'No emails sent yet'}
-              </TableCell>
-            </TableRow>
+            </div>
           )}
-        </TableBody>
-      </Table>
+      </PosResizableTableFrame>
     </div>
   );
   };
@@ -3969,6 +4263,7 @@ const CMSDashboardInner: React.FC = () => {
   };
 
   return (
+    <PosColumnResizeSuspendContext.Provider value={posColumnResizeSuspendRef}>
     <div className="min-h-screen bg-gray-50 flex">
       {/* Mobile sidebar overlay */}
       {mobileSidebarOpen && <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={closeMobileSidebar} />}
@@ -4002,8 +4297,8 @@ const CMSDashboardInner: React.FC = () => {
         </div>
 
 
-        {/* Page Content */}
-        <div className="flex-1 p-4 lg:p-6">
+        {/* Page Content — min-h-0/min-w-0 so nested POS tables can scroll inside flex, not stretch the page */}
+        <div className="flex-1 min-h-0 min-w-0 overflow-x-hidden p-4 lg:p-6">
           {renderContent()}
         </div>
       </div>
@@ -4678,6 +4973,7 @@ const CMSDashboardInner: React.FC = () => {
         </div>
       )}
     </div>
+    </PosColumnResizeSuspendContext.Provider>
   );
 };
 

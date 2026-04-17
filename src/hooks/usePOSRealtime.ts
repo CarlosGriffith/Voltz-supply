@@ -1,4 +1,11 @@
-import { useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from 'react';
+import {
+  useEffect,
+  useRef,
+  useCallback,
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+} from 'react';
 import { getPOSSyncChannel } from '@/lib/posBroadcast';
 import type { POSTableName } from '@/lib/posBroadcast';
 import {
@@ -22,19 +29,28 @@ interface POSRealtimeSetters {
 const POLL_INTERVAL_MS = 30_000;
 const DEBOUNCE_MS = 300;
 
+export type UsePOSRealtimeOptions = {
+  /** When `current` is true, skips refresh work (e.g. user is dragging a POS table column). */
+  suspendRef?: MutableRefObject<boolean>;
+};
+
 /**
  * Listens for POS updates via BroadcastChannel (other local tabs) and polls periodically.
  */
 export function usePOSRealtime(
   setters: POSRealtimeSetters,
-  enabled: boolean = true
+  enabled: boolean = true,
+  options?: UsePOSRealtimeOptions
 ) {
   const settersRef = useRef(setters);
   settersRef.current = setters;
 
+  const suspendRef = options?.suspendRef;
+
   const pendingRefreshes = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const refreshTable = useCallback(async (table: POSTableName) => {
+    if (suspendRef?.current) return;
     const s = settersRef.current;
     try {
       switch (table) {
@@ -82,9 +98,10 @@ export function usePOSRealtime(
     } catch (err) {
       console.error(`[POS Realtime] Error refreshing ${table}:`, err);
     }
-  }, []);
+  }, [suspendRef]);
 
   const refreshAll = useCallback(async () => {
+    if (suspendRef?.current) return;
     const s = settersRef.current;
     try {
       const [cust, quotes, orders, invoices, receipts, refunds, qr, emails] = await Promise.all([
@@ -102,7 +119,7 @@ export function usePOSRealtime(
     } catch (err) {
       console.error('[POS Realtime] Error refreshing all:', err);
     }
-  }, []);
+  }, [suspendRef]);
 
   const debouncedRefresh = useCallback((table: POSTableName) => {
     const existing = pendingRefreshes.current.get(table);
@@ -110,11 +127,12 @@ export function usePOSRealtime(
 
     const timeout = setTimeout(() => {
       pendingRefreshes.current.delete(table);
+      if (suspendRef?.current) return;
       refreshTable(table);
     }, DEBOUNCE_MS);
 
     pendingRefreshes.current.set(table, timeout);
-  }, [refreshTable]);
+  }, [refreshTable, suspendRef]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -147,6 +165,7 @@ export function usePOSRealtime(
     };
   }, [enabled, debouncedRefresh, refreshAll]);
 }
+
 
 /**
  * Refetches local `customers` when another POS surface broadcasts `pos_customers`, and when the user

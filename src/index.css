@@ -184,3 +184,17 @@
 .scrollbar-hide::-webkit-scrollbar {
   display: none !important;
 }
+
+/* POS data tables (scroll regions): hide horizontal scrollbar + corner so the right-edge column adjuster stays clean in Chrome. */
+.pos-data-table-scroll::-webkit-scrollbar:horizontal {
+  height: 0;
+}
+.pos-data-table-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Create/Review Quote–Order–Invoice line items: keep horizontal scroll obvious + momentum on iOS (list tables still use `pos-data-table-scroll`). */
+.pos-doc-line-items-scroll {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}

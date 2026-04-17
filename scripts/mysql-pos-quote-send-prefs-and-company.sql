@@ -1,6 +1,9 @@
 -- Run once on existing MySQL databases (Aiven / production).
 -- Quote send preferences + company on orders/invoices.
-
+--
+-- For only `pos_quotes` send columns (idempotent, duplicate-safe), prefer:
+--   npm run db:add-pos-quotes-send-via-columns
+--
 -- If a column already exists, skip that statement or comment it out.
 
 ALTER TABLE pos_quotes
