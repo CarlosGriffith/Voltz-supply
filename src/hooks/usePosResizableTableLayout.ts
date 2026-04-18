@@ -1,5 +1,19 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ImperativePanelGroupHandle } from 'react-resizable-panels';
+
+const EXPAND_STORAGE_PREFIX = 'voltz-cms-pos-expand:';
+
+function readStoredExpandPx(key: string | undefined): number {
+  if (!key || typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(`${EXPAND_STORAGE_PREFIX}${key}`);
+    if (raw == null) return 0;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Syncs {@link PanelGroup} column % with CSS grid rows and supports widening the last column
@@ -9,23 +23,42 @@ export function usePosResizableTableLayout(args: {
   columnCount: number;
   defaultPercents: number[];
   panelMins: readonly number[];
+  /**
+   * When set, extra width from the right-edge drag is persisted (`voltz-cms-pos-expand:` + key in localStorage).
+   * Use the same string as this table’s `PanelGroup` `autoSaveId`.
+   */
+  expandStorageKey?: string;
 }) {
-  const { columnCount, defaultPercents, panelMins } = args;
+  const { columnCount, defaultPercents, panelMins, expandStorageKey } = args;
   const [colLayout, setColLayout] = useState<number[]>(() => [...defaultPercents]);
-  const [expandPx, setExpandPx] = useState(0);
+  const [expandPx, setExpandPx] = useState(() => readStoredExpandPx(expandStorageKey));
   const shellRef = useRef<HTMLDivElement>(null);
   const panelGroupRef = useRef<ImperativePanelGroupHandle>(null);
   const expandPrevRef = useRef(0);
   const rightEdgeDragRef = useRef<{ startClientX: number; startExpand: number } | null>(null);
 
+  /** `minmax(0, Nfr)` so tracks can shrink below content min-size; plain `Nfr` lets cells overflow into neighbors. */
   const gridTemplateColumns = useMemo(
-    () => colLayout.map((w) => `${w}fr`).join(' '),
+    () => colLayout.map((w) => `minmax(0,${w}fr)`).join(' '),
     [colLayout],
   );
 
   const onPanelLayout = useCallback((sizes: number[]) => {
     setColLayout(sizes);
   }, []);
+
+  useLayoutEffect(() => {
+    setExpandPx(readStoredExpandPx(expandStorageKey));
+  }, [expandStorageKey]);
+
+  useEffect(() => {
+    if (!expandStorageKey) return;
+    try {
+      localStorage.setItem(`${EXPAND_STORAGE_PREFIX}${expandStorageKey}`, String(expandPx));
+    } catch {
+      /* quota / private mode */
+    }
+  }, [expandPx, expandStorageKey]);
 
   useLayoutEffect(() => {
     const shell = shellRef.current;

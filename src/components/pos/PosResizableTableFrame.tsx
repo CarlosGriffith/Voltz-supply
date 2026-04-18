@@ -55,7 +55,7 @@ export function PosResizableTableFrame({
       >
         <div
           ref={table.shellRef}
-          className="relative w-full"
+          className="relative w-full min-w-0"
           style={{ minWidth: `calc(${baseMinWidthRem}rem + ${table.expandPx}px)` }}
         >
           <div

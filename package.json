@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "db:ping-mysql": "node scripts/ping-mysql.mjs",
+    "db:sql": "node scripts/mysql-query.mjs",
     "db:bootstrap:aiven": "node scripts/run-aiven-mysql-bootstrap.mjs",
     "db:migrate:pos-receipt-invoice-links": "node scripts/run-migrate-pos-receipt-invoice-links.mjs",
     "db:migrate:pos-refunds-invoice-links": "node scripts/run-migrate-pos-refunds-invoice-links-column.mjs",

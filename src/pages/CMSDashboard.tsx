@@ -355,12 +355,13 @@ const StatusBadge: React.FC<{
   return (
     <span
       className={cn(
-        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold',
+        'inline-flex min-w-0 max-w-full items-center justify-center rounded-full px-2 py-0.5 text-center text-xs font-semibold leading-tight',
         colors[status] || 'bg-gray-100 text-gray-600',
         className
       )}
+      title={label}
     >
-      {label}
+      <span className="min-w-0 max-w-full [overflow-wrap:anywhere]">{label}</span>
     </span>
   );
 };
@@ -1212,45 +1213,58 @@ const CMSDashboardInner: React.FC = () => {
   const [receiptsSearch, setReceiptsSearch] = useState('');
   const [refundsSearch, setRefundsSearch] = useState('');
   const [quoteRequestsSearch, setQuoteRequestsSearch] = useState('');
+  /** Scope react-resizable-panels + edge-expand storage per CMS login (localStorage). */
+  const cmsPanelAutoSaveId = useCallback(
+    (base: string) => (username ? `${base}__cmsuser:${encodeURIComponent(username)}` : base),
+    [username]
+  );
   const quoteRequestsTable = usePosResizableTableLayout({
     columnCount: 6,
     defaultPercents: [...POS_DEFAULT_COL_PCT_QUOTE_REQUESTS],
     panelMins: POS_QUOTE_REQUESTS_PANEL_MIN,
+    expandStorageKey: cmsPanelAutoSaveId('pos-quote-requests-panels-v3'),
   });
   const docQuoteTable = usePosResizableTableLayout({
     columnCount: 7,
     defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.quote],
     panelMins: POS_DOC_PANEL_MIN.quote,
+    expandStorageKey: cmsPanelAutoSaveId('pos-doc-quote-panels-v1'),
   });
   const docOrderTable = usePosResizableTableLayout({
     columnCount: 6,
     defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.order],
     panelMins: POS_DOC_PANEL_MIN.order,
+    expandStorageKey: cmsPanelAutoSaveId('pos-doc-order-panels-v1'),
   });
   const docInvoiceTable = usePosResizableTableLayout({
     columnCount: 6,
     defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.invoice],
     panelMins: POS_DOC_PANEL_MIN.invoice,
+    expandStorageKey: cmsPanelAutoSaveId('pos-doc-invoice-panels-v1'),
   });
   const docReceiptTable = usePosResizableTableLayout({
     columnCount: 8,
     defaultPercents: [...POS_DEFAULT_COL_PCT_DOC.receipt],
     panelMins: POS_DOC_PANEL_MIN.receipt,
+    expandStorageKey: cmsPanelAutoSaveId('pos-doc-receipt-panels-v1'),
   });
   const customersTable = usePosResizableTableLayout({
     columnCount: 6,
     defaultPercents: [...POS_DEFAULT_COL_PCT_CUSTOMERS],
     panelMins: POS_CUSTOMERS_PANEL_MIN,
+    expandStorageKey: cmsPanelAutoSaveId('pos-customers-panels-v1'),
   });
   const refundsTable = usePosResizableTableLayout({
     columnCount: 7,
     defaultPercents: [...POS_DEFAULT_COL_PCT_REFUNDS],
     panelMins: POS_REFUNDS_PANEL_MIN,
+    expandStorageKey: cmsPanelAutoSaveId('pos-refunds-panels-v1'),
   });
   const sentEmailsTable = usePosResizableTableLayout({
     columnCount: 6,
     defaultPercents: [...POS_DEFAULT_COL_PCT_SENT_EMAILS],
     panelMins: POS_SENT_EMAILS_PANEL_MIN,
+    expandStorageKey: cmsPanelAutoSaveId('pos-sent-emails-panels-v1'),
   });
 
   const viewQuotePopupHtml = useMemo(() => {
@@ -1996,14 +2010,15 @@ const CMSDashboardInner: React.FC = () => {
             ? docInvoiceTable
             : docReceiptTable;
     const docBaseRem = POS_DOC_BASE_MIN_WIDTH_REM[docType];
-    const docAutoSaveId =
+    const docAutoSaveId = cmsPanelAutoSaveId(
       docType === 'quote'
         ? 'pos-doc-quote-panels-v1'
         : docType === 'order'
           ? 'pos-doc-order-panels-v1'
           : docType === 'invoice'
             ? 'pos-doc-invoice-panels-v1'
-            : 'pos-doc-receipt-panels-v1';
+            : 'pos-doc-receipt-panels-v1'
+    );
     return (
       <div className={POS_PAGE_SHELL}>
         {!embed && (
@@ -2082,7 +2097,7 @@ const CMSDashboardInner: React.FC = () => {
             {filteredDocs.map((doc: any, rowIdx: number) => (
               <div
                 key={doc?.id != null ? String(doc.id) : `${docType}-row-${rowIdx}`}
-                className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
                 style={{ gridTemplateColumns: docTable.gridTemplateColumns }}
               >
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
@@ -2702,7 +2717,7 @@ const CMSDashboardInner: React.FC = () => {
               direction="horizontal"
               className="w-full items-stretch min-h-0"
               onLayout={quoteRequestsTable.onPanelLayout}
-              autoSaveId="pos-quote-requests-panels-v3"
+              autoSaveId={cmsPanelAutoSaveId('pos-quote-requests-panels-v3')}
             >
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[0]}
@@ -2829,10 +2844,10 @@ const CMSDashboardInner: React.FC = () => {
             {filteredQrRows.map((qr) => (
               <div
                 key={qr.id}
-                className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
                 style={{ gridTemplateColumns: quoteRequestsTable.gridTemplateColumns }}
               >
-                <div className="min-w-0 px-3 py-2.5 pl-4 max-sm:break-words max-sm:overflow-hidden">
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 max-sm:break-words">
                   <p className="font-semibold text-[#1a2332] break-words [overflow-wrap:anywhere] leading-snug">
                     {qr.name}
                   </p>
@@ -2843,24 +2858,24 @@ const CMSDashboardInner: React.FC = () => {
                     <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.company}</p>
                   )}
                 </div>
-                <div className="min-w-0 px-3 py-2.5 pr-2 max-sm:break-words max-sm:overflow-hidden">
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pr-2 max-sm:break-words">
                   <p className="text-inherit text-gray-800 break-words [overflow-wrap:anywhere] leading-snug">
                     {stripQuoteRequestProductQtyDisplay(qr.product || '')}
                   </p>
                   <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.category}</p>
                   {qr.quantity && <p className="text-xs text-gray-400">Qty: {qr.quantity}</p>}
                 </div>
-                <div className="min-w-0 whitespace-nowrap px-3 py-2.5 pl-2 text-gray-500">
-                  {fmtDatePOS(qr.created_at) || '—'}
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-2 text-gray-500 tabular-nums">
+                  <span className="block truncate">{fmtDatePOS(qr.created_at) || '—'}</span>
                 </div>
-                <div className="min-w-0 px-3 py-2.5 text-center max-sm:overflow-hidden max-sm:px-1">
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 text-center max-sm:px-1">
                   <div className="flex justify-center max-sm:min-w-0 max-sm:px-0.5">
                     <div className="flex min-w-0 max-w-full items-center justify-center">
                       <QuoteRequestQuotedStatusCell qr={qr} quoteList={quotes} onOpenQuote={goToQuoteSearch} />
                     </div>
                   </div>
                 </div>
-                <div className="min-w-0 px-3 py-2.5 text-left text-gray-700 max-sm:break-words max-sm:leading-snug max-sm:overflow-hidden max-sm:whitespace-normal sm:whitespace-nowrap">
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-700 max-sm:break-words max-sm:leading-snug max-sm:whitespace-normal sm:truncate sm:tabular-nums">
                   {(() => {
                     const linked = findQuoteForWebsiteRequest(qr, quotes);
                     const rawAt =
@@ -2871,9 +2886,13 @@ const CMSDashboardInner: React.FC = () => {
                         ? String(linked.email_sent_at)
                         : '') ||
                       (linked?.id ? quoteEmailSentAtByQuoteId.get(linked.id) : undefined);
-                    if (!rawAt) return <span className="text-gray-400">—</span>;
+                    if (!rawAt) return <span className="text-gray-400 sm:block sm:truncate">—</span>;
                     const formatted = fmtDatePOS(rawAt);
-                    return formatted ? <span>{formatted}</span> : <span className="text-gray-400">—</span>;
+                    return formatted ? (
+                      <span className="max-sm:[overflow-wrap:anywhere] sm:block sm:truncate">{formatted}</span>
+                    ) : (
+                      <span className="text-gray-400 sm:block sm:truncate">—</span>
+                    );
                   })()}
                 </div>
                 <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
@@ -3252,7 +3271,7 @@ const CMSDashboardInner: React.FC = () => {
         edgeTitle="Drag right to widen the table; drag left to narrow"
         header={
           <>
-            <CustomersPanelHeader table={customersTable} autoSaveId="pos-customers-panels-v1" />
+            <CustomersPanelHeader table={customersTable} autoSaveId={cmsPanelAutoSaveId('pos-customers-panels-v1')} />
             <div
               className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
               aria-hidden
@@ -3263,7 +3282,7 @@ const CMSDashboardInner: React.FC = () => {
           {displayCustomers.map((c) => (
             <div
               key={c.id}
-              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: customersTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
@@ -3504,7 +3523,7 @@ const CMSDashboardInner: React.FC = () => {
         edgeTitle="Drag right to widen the table; drag left to narrow"
         header={
           <>
-            <RefundsPanelHeader table={refundsTable} autoSaveId="pos-refunds-panels-v1" />
+            <RefundsPanelHeader table={refundsTable} autoSaveId={cmsPanelAutoSaveId('pos-refunds-panels-v1')} />
             <div
               className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
               aria-hidden
@@ -3515,7 +3534,7 @@ const CMSDashboardInner: React.FC = () => {
           {filtered.map(r => (
             <div
               key={r.id}
-              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: refundsTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
@@ -3725,7 +3744,7 @@ const CMSDashboardInner: React.FC = () => {
         edgeTitle="Drag right to widen the table; drag left to narrow"
         header={
           <>
-            <SentEmailsPanelHeader table={sentEmailsTable} autoSaveId="pos-sent-emails-panels-v1" />
+            <SentEmailsPanelHeader table={sentEmailsTable} autoSaveId={cmsPanelAutoSaveId('pos-sent-emails-panels-v1')} />
             <div
               className="pointer-events-none absolute right-3 top-1/2 z-[5] h-3/4 w-px -translate-y-1/2 bg-gray-200"
               aria-hidden
@@ -3736,7 +3755,7 @@ const CMSDashboardInner: React.FC = () => {
           {rows.map(e => (
             <div
               key={e.id}
-              className="grid items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: sentEmailsTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
