@@ -14,6 +14,7 @@ export function CustomersPanelHeader({ table, autoSaveId }: { table: PosResizabl
   const pm = table.panelMins;
   return (
     <PanelGroup
+      key={autoSaveId}
       ref={table.panelGroupRef}
       direction="horizontal"
       className="w-full items-stretch min-h-0"
@@ -23,7 +24,7 @@ export function CustomersPanelHeader({ table, autoSaveId }: { table: PosResizabl
       <Panel defaultSize={dp[0]} minSize={pm[0]} id="pos-customers-col-0" className="min-w-0 flex items-center">
         <div
           className={cn(
-            'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+            'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
             DIV,
           )}
         >
@@ -34,13 +35,13 @@ export function CustomersPanelHeader({ table, autoSaveId }: { table: PosResizabl
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[1]} minSize={pm[1]} id="pos-customers-col-1" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Contact</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Contact</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[2]} minSize={pm[2]} id="pos-customers-col-2" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Company</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Company</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
@@ -70,6 +71,7 @@ export function RefundsPanelHeader({ table, autoSaveId }: { table: PosResizableT
   const pm = table.panelMins;
   return (
     <PanelGroup
+      key={autoSaveId}
       ref={table.panelGroupRef}
       direction="horizontal"
       className="w-full items-stretch min-h-0"
@@ -77,19 +79,19 @@ export function RefundsPanelHeader({ table, autoSaveId }: { table: PosResizableT
       autoSaveId={autoSaveId}
     >
       <Panel defaultSize={dp[0]} minSize={pm[0]} id="pos-refunds-col-0" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Refund No.</div>
+        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Refund No.</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[1]} minSize={pm[1]} id="pos-refunds-col-1" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Customer</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Customer</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[2]} minSize={pm[2]} id="pos-refunds-col-2" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Type</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Type</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
@@ -107,7 +109,7 @@ export function RefundsPanelHeader({ table, autoSaveId }: { table: PosResizableT
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[5]} minSize={pm[5]} id="pos-refunds-col-5" className="min-w-0 flex items-center justify-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1', DIV)}>Status</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1', DIV)}>Status</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
@@ -125,6 +127,7 @@ export function SentEmailsPanelHeader({ table, autoSaveId }: { table: PosResizab
   const pm = table.panelMins;
   return (
     <PanelGroup
+      key={autoSaveId}
       ref={table.panelGroupRef}
       direction="horizontal"
       className="w-full items-stretch min-h-0"
@@ -132,19 +135,19 @@ export function SentEmailsPanelHeader({ table, autoSaveId }: { table: PosResizab
       autoSaveId={autoSaveId}
     >
       <Panel defaultSize={dp[0]} minSize={pm[0]} id="pos-sent-emails-col-0" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Recipient</div>
+        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Recipient</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[1]} minSize={pm[1]} id="pos-sent-emails-col-1" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Subject</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Subject</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[2]} minSize={pm[2]} id="pos-sent-emails-col-2" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Document</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Document</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}
@@ -156,7 +159,7 @@ export function SentEmailsPanelHeader({ table, autoSaveId }: { table: PosResizab
         {GRIP}
       </PanelResizeHandle>
       <Panel defaultSize={dp[4]} minSize={pm[4]} id="pos-sent-emails-col-4" className="min-w-0 flex items-center justify-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1', DIV)}>Status</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1', DIV)}>Status</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         {GRIP}

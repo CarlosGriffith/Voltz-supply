@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { flushSync } from 'react-dom';
+import { markCmsPostLoginViewResetPending } from '@/lib/cmsPostLoginView';
 
 interface CMSAuthContextType {
   isAuthenticated: boolean;
@@ -47,6 +48,7 @@ export const CMSAuthProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setAuthState({ isAuthenticated: true, username });
       });
       localStorage.setItem(CMS_AUTH_KEY, JSON.stringify({ username, loginTime: Date.now() }));
+      markCmsPostLoginViewResetPending();
       return true;
     }
     return false;

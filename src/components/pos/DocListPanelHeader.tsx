@@ -23,6 +23,7 @@ export function DocListPanelHeader({
   if (docType === 'quote') {
     return (
       <PanelGroup
+        key={autoSaveId}
         ref={table.panelGroupRef}
         direction="horizontal"
         className="w-full items-stretch min-h-0"
@@ -32,7 +33,7 @@ export function DocListPanelHeader({
         <Panel defaultSize={dp[0]} minSize={pm[0]} id="pos-doc-quote-col-0" className="min-w-0 flex items-center">
           <div
             className={cn(
-              'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+              'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
               DIV,
             )}
           >
@@ -43,7 +44,7 @@ export function DocListPanelHeader({
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
         </PanelResizeHandle>
         <Panel defaultSize={dp[1]} minSize={pm[1]} id="pos-doc-quote-col-1" className="min-w-0 flex items-center">
-          <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>
+          <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>
             Customer
           </div>
         </Panel>
@@ -63,7 +64,7 @@ export function DocListPanelHeader({
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
         </PanelResizeHandle>
         <Panel defaultSize={dp[4]} minSize={pm[4]} id="pos-doc-quote-col-4" className="min-w-0 flex items-center justify-center">
-          <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1', DIV)}>Status</div>
+          <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1', DIV)}>Status</div>
         </Panel>
         <PanelResizeHandle className={HANDLE} title="Resize columns">
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
@@ -71,7 +72,7 @@ export function DocListPanelHeader({
         <Panel defaultSize={dp[5]} minSize={pm[5]} id="pos-doc-quote-col-5" className="min-w-0 flex items-center">
           <div
             className={cn(
-              'relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-sm:break-words max-sm:leading-snug sm:whitespace-nowrap',
+              'relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
               DIV,
             )}
           >
@@ -94,6 +95,7 @@ export function DocListPanelHeader({
     const prefix = docType === 'order' ? 'pos-doc-order' : 'pos-doc-invoice';
     return (
       <PanelGroup
+        key={autoSaveId}
         ref={table.panelGroupRef}
         direction="horizontal"
         className="w-full items-stretch min-h-0"
@@ -101,7 +103,7 @@ export function DocListPanelHeader({
         autoSaveId={autoSaveId}
       >
         <Panel defaultSize={dp[0]} minSize={pm[0]} id={`${prefix}-col-0`} className="min-w-0 flex items-center">
-          <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>
+          <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>
             {noLabel}
           </div>
         </Panel>
@@ -109,7 +111,7 @@ export function DocListPanelHeader({
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
         </PanelResizeHandle>
         <Panel defaultSize={dp[1]} minSize={pm[1]} id={`${prefix}-col-1`} className="min-w-0 flex items-center">
-          <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Customer</div>
+          <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Customer</div>
         </Panel>
         <PanelResizeHandle className={HANDLE} title="Resize columns">
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
@@ -127,7 +129,7 @@ export function DocListPanelHeader({
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
         </PanelResizeHandle>
         <Panel defaultSize={dp[4]} minSize={pm[4]} id={`${prefix}-col-4`} className="min-w-0 flex items-center justify-center">
-          <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1', DIV)}>Status</div>
+          <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1', DIV)}>Status</div>
         </Panel>
         <PanelResizeHandle className={HANDLE} title="Resize columns">
           <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
@@ -143,6 +145,7 @@ export function DocListPanelHeader({
   // receipt — 8 columns
   return (
     <PanelGroup
+      key={autoSaveId}
       ref={table.panelGroupRef}
       direction="horizontal"
       className="w-full items-stretch min-h-0"
@@ -150,13 +153,13 @@ export function DocListPanelHeader({
       autoSaveId={autoSaveId}
     >
       <Panel defaultSize={dp[0]} minSize={pm[0]} id="pos-doc-receipt-col-0" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Receipt No.</div>
+        <div className={cn('relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Receipt No.</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
       </PanelResizeHandle>
       <Panel defaultSize={dp[1]} minSize={pm[1]} id="pos-doc-receipt-col-1" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Customer</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Customer</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
@@ -168,7 +171,7 @@ export function DocListPanelHeader({
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
       </PanelResizeHandle>
       <Panel defaultSize={dp[3]} minSize={pm[3]} id="pos-doc-receipt-col-3" className="min-w-0 flex items-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap', DIV)}>Payment Method</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-lg:whitespace-nowrap', DIV)}>Payment Method</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
@@ -186,7 +189,7 @@ export function DocListPanelHeader({
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />
       </PanelResizeHandle>
       <Panel defaultSize={dp[6]} minSize={pm[6]} id="pos-doc-receipt-col-6" className="min-w-0 flex items-center justify-center">
-        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1', DIV)}>Status</div>
+        <div className={cn('relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1', DIV)}>Status</div>
       </Panel>
       <PanelResizeHandle className={HANDLE} title="Resize columns">
         <span className="h-5 w-px rounded-full bg-transparent transition-colors group-hover:bg-gray-400" aria-hidden />

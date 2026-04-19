@@ -34,7 +34,7 @@ export function usePosResizableTableLayout(args: {
   const [expandPx, setExpandPx] = useState(() => readStoredExpandPx(expandStorageKey));
   const shellRef = useRef<HTMLDivElement>(null);
   const panelGroupRef = useRef<ImperativePanelGroupHandle>(null);
-  const expandPrevRef = useRef(0);
+  const expandPrevRef = useRef(readStoredExpandPx(expandStorageKey));
   const rightEdgeDragRef = useRef<{ startClientX: number; startExpand: number } | null>(null);
 
   /** `minmax(0, Nfr)` so tracks can shrink below content min-size; plain `Nfr` lets cells overflow into neighbors. */
@@ -48,8 +48,48 @@ export function usePosResizableTableLayout(args: {
   }, []);
 
   useLayoutEffect(() => {
-    setExpandPx(readStoredExpandPx(expandStorageKey));
+    const v = readStoredExpandPx(expandStorageKey);
+    setExpandPx(v);
+    expandPrevRef.current = v;
   }, [expandStorageKey]);
+
+  /** Body rows use CSS grid %; keep in sync when PanelGroup restores from storage. */
+  useLayoutEffect(() => {
+    let cancelled = false;
+    let nestedRaf = 0;
+    const sync = () => {
+      if (cancelled) return;
+      const pg = panelGroupRef.current;
+      if (!pg) return;
+      try {
+        const L = pg.getLayout();
+        if (L.length === columnCount && L.every((n) => Number.isFinite(n) && n > 0)) {
+          setColLayout((prev) => {
+            if (
+              prev.length === L.length &&
+              prev.every((v, i) => Math.abs(v - L[i]) < 0.02)
+            ) {
+              return prev;
+            }
+            return L;
+          });
+        }
+      } catch {
+        /* panel group not ready */
+      }
+    };
+    sync();
+    const t1 = requestAnimationFrame(sync);
+    const t2 = requestAnimationFrame(() => {
+      nestedRaf = requestAnimationFrame(sync);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(t1);
+      cancelAnimationFrame(t2);
+      cancelAnimationFrame(nestedRaf);
+    };
+  }, [columnCount, expandStorageKey]);
 
   useEffect(() => {
     if (!expandStorageKey) return;

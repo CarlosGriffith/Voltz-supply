@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 
 import { useNavigate } from 'react-router-dom';
 import { PosColumnResizeSuspendContext } from '@/contexts/PosColumnResizeSuspendContext';
@@ -45,6 +45,9 @@ import {
 } from '@/lib/utils';
 
 import { saveConfigDetailed, saveConfig as dbSaveConfig, fetchConfig, saveConfig } from '@/lib/cmsData';
+import { consumeCmsPostLoginViewReset } from '@/lib/cmsPostLoginView';
+import { migrateVpKeysToUnifiedStorage } from '@/lib/migrateVpKeysToUnifiedStorage';
+import { flushPosCmsTableLayouts, POS_CMS_PANEL_IDS } from '@/lib/posCmsPanelLayoutFlush';
 import { usePOSRealtime, useSyncSelectedCustomerFromList } from '@/hooks/usePOSRealtime';
 import {
   asPosRows,
@@ -113,53 +116,53 @@ const LOGO_URL = 'https://d64gsuwffb70l.cloudfront.net/6995573664728a165adc7a9f_
  */
 const POS_DEFAULT_COL_PCT_DOC: Record<'quote' | 'order' | 'invoice' | 'receipt', number[]> = {
   /** Quote #, Customer, Date, Total, Status, Email sent, Actions */
-  quote: [11, 22, 10, 10, 12, 25, 10],
+  quote: [10, 21, 14, 10, 12, 23, 10],
   /** Order #, Customer, Date, Total, Status, Actions */
-  order: [15, 26, 11, 12, 16, 20],
+  order: [14, 24, 15, 12, 16, 19],
   /** Invoice #, Customer, Date, Total, Status, Actions */
-  invoice: [15, 26, 11, 12, 16, 20],
+  invoice: [14, 24, 15, 12, 16, 19],
   /** Receipt #, Customer, Date, Payment method, Invoice(s) total, Amount received, Status, Actions */
-  receipt: [10, 18, 9, 15, 11, 11, 14, 12],
+  receipt: [9, 17, 13, 14, 11, 11, 14, 11],
 };
 
 /** Website quote requests: Customer, Product, Date, Status, Email sent, Actions */
-const POS_DEFAULT_COL_PCT_QUOTE_REQUESTS = [28, 30, 7, 8, 19, 8];
+const POS_DEFAULT_COL_PCT_QUOTE_REQUESTS = [25, 27, 13, 8, 17, 10];
 
 /** Min % width per panel (react-resizable-panels). */
-const POS_QUOTE_REQUESTS_PANEL_MIN = [8, 10, 5, 5, 8, 9] as const;
+const POS_QUOTE_REQUESTS_PANEL_MIN = [8, 9, 8, 5, 8, 9] as const;
 
 /** Name, Contact, Company, Store credit, Balance due, Actions */
 const POS_DEFAULT_COL_PCT_CUSTOMERS = [20, 24, 18, 12, 14, 12];
 
 /** Refund #, Customer, Type, Amount, Date, Status, Actions */
-const POS_DEFAULT_COL_PCT_REFUNDS = [12, 22, 12, 12, 11, 15, 16];
+const POS_DEFAULT_COL_PCT_REFUNDS = [11, 20, 12, 11, 15, 15, 16];
 
 /** Recipient, Subject, Document, Sent, Status, Actions */
-const POS_DEFAULT_COL_PCT_SENT_EMAILS = [22, 28, 14, 14, 12, 10];
+const POS_DEFAULT_COL_PCT_SENT_EMAILS = [21, 26, 13, 17, 12, 11];
 
 /** Min panel % — document lists (quotes / orders / invoices / receipts). */
 const POS_DOC_PANEL_MIN: Record<'quote' | 'order' | 'invoice' | 'receipt', readonly number[]> = {
-  quote: [8, 9, 5, 6, 7, 9, 9],
-  order: [9, 11, 6, 6, 8, 9],
-  invoice: [9, 11, 6, 6, 8, 9],
-  receipt: [7, 9, 6, 8, 7, 7, 7, 9],
+  quote: [8, 9, 8, 6, 7, 9, 9],
+  order: [9, 11, 8, 6, 8, 9],
+  invoice: [9, 11, 8, 6, 8, 9],
+  receipt: [7, 9, 8, 8, 7, 7, 7, 9],
 };
 
 const POS_DOC_BASE_MIN_WIDTH_REM: Record<'quote' | 'order' | 'invoice' | 'receipt', number> = {
-  quote: 56,
-  order: 52,
-  invoice: 52,
-  receipt: 66,
+  quote: 58,
+  order: 54,
+  invoice: 54,
+  receipt: 68,
 };
 
 const POS_CUSTOMERS_PANEL_MIN = [10, 10, 8, 7, 7, 9] as const;
-const POS_REFUNDS_PANEL_MIN = [8, 10, 7, 7, 6, 8, 9] as const;
-const POS_SENT_EMAILS_PANEL_MIN = [10, 12, 8, 8, 8, 9] as const;
+const POS_REFUNDS_PANEL_MIN = [8, 10, 7, 7, 8, 8, 9] as const;
+const POS_SENT_EMAILS_PANEL_MIN = [10, 12, 8, 10, 8, 9] as const;
 
-const POS_QUOTE_REQUESTS_BASE_MIN_WIDTH_REM = 52;
-const POS_CUSTOMERS_BASE_MIN_WIDTH_REM = 52;
-const POS_REFUNDS_BASE_MIN_WIDTH_REM = 56;
-const POS_SENT_EMAILS_BASE_MIN_WIDTH_REM = 52;
+const POS_QUOTE_REQUESTS_BASE_MIN_WIDTH_REM = 54;
+const POS_CUSTOMERS_BASE_MIN_WIDTH_REM = 54;
+const POS_REFUNDS_BASE_MIN_WIDTH_REM = 58;
+const POS_SENT_EMAILS_BASE_MIN_WIDTH_REM = 54;
 
 // ─── Section Row (from original) ───
 const SectionRow: React.FC<{
@@ -361,7 +364,9 @@ const StatusBadge: React.FC<{
       )}
       title={label}
     >
-      <span className="min-w-0 max-w-full [overflow-wrap:anywhere]">{label}</span>
+      <span className="min-w-0 max-w-full max-lg:truncate max-lg:whitespace-nowrap lg:[overflow-wrap:anywhere] lg:whitespace-normal">
+        {label}
+      </span>
     </span>
   );
 };
@@ -556,7 +561,7 @@ const QuoteRequestQuotedStatusCell: React.FC<{
       <StatusBadge
         status={status}
         emailedAsSent
-        className="max-w-[min(11rem,100%)] whitespace-normal text-center leading-tight"
+        className="max-w-[min(11rem,100%)] text-center leading-tight lg:whitespace-normal"
       />
     );
   }
@@ -579,7 +584,7 @@ const QuoteRequestQuotedStatusCell: React.FC<{
           <StatusBadge
             status={status}
             emailedAsSent
-            className="max-w-[min(11rem,100%)] whitespace-normal text-center leading-tight"
+            className="max-w-[min(11rem,100%)] text-center leading-tight lg:whitespace-normal"
           />
         </button>
       </TooltipTrigger>
@@ -1213,14 +1218,24 @@ const CMSDashboardInner: React.FC = () => {
   const [receiptsSearch, setReceiptsSearch] = useState('');
   const [refundsSearch, setRefundsSearch] = useState('');
   const [quoteRequestsSearch, setQuoteRequestsSearch] = useState('');
-  /** Scope react-resizable-panels + edge-expand storage per CMS login (localStorage). */
+  /**
+   * One `autoSaveId` per user per table (no `__vp` suffix). Avoids loading the wrong bucket on the first
+   * render when matchMedia / hydration briefly disagrees with the real viewport — which previously
+   * restored desktop-stored widths on phones after logout/login.
+   */
+  migrateVpKeysToUnifiedStorage(username);
   const cmsPanelAutoSaveId = useCallback(
-    (base: string) => (username ? `${base}__cmsuser:${encodeURIComponent(username)}` : base),
+    (base: string) =>
+      username ? `${base}__cmsuser:${encodeURIComponent(username)}` : base,
     [username]
   );
+
+  useLayoutEffect(() => {
+    consumeCmsPostLoginViewReset();
+  }, []);
   const quoteRequestsTable = usePosResizableTableLayout({
     columnCount: 6,
-    defaultPercents: [...POS_DEFAULT_COL_PCT_QUOTE_REQUESTS],
+    defaultPercents: POS_DEFAULT_COL_PCT_QUOTE_REQUESTS,
     panelMins: POS_QUOTE_REQUESTS_PANEL_MIN,
     expandStorageKey: cmsPanelAutoSaveId('pos-quote-requests-panels-v3'),
   });
@@ -1266,6 +1281,76 @@ const CMSDashboardInner: React.FC = () => {
     panelMins: POS_SENT_EMAILS_PANEL_MIN,
     expandStorageKey: cmsPanelAutoSaveId('pos-sent-emails-panels-v1'),
   });
+
+  /** Sync column % + expand to localStorage before unload / logout (library debounces ~100ms). */
+  const flushPosTablesToStorageRef = useRef<() => void>(() => {});
+  flushPosTablesToStorageRef.current = () => {
+    if (typeof window === 'undefined' || !username) return;
+    flushPosCmsTableLayouts({
+      tables: [
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-quote-requests-panels-v3'),
+          panelIds: POS_CMS_PANEL_IDS.quoteRequests,
+          getLayout: () => quoteRequestsTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-doc-quote-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.docQuote,
+          getLayout: () => docQuoteTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-doc-order-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.docOrder,
+          getLayout: () => docOrderTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-doc-invoice-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.docInvoice,
+          getLayout: () => docInvoiceTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-doc-receipt-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.docReceipt,
+          getLayout: () => docReceiptTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-customers-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.customers,
+          getLayout: () => customersTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-refunds-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.refunds,
+          getLayout: () => refundsTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+        {
+          autoSaveId: cmsPanelAutoSaveId('pos-sent-emails-panels-v1'),
+          panelIds: POS_CMS_PANEL_IDS.sentEmails,
+          getLayout: () => sentEmailsTable.panelGroupRef.current?.getLayout() ?? [],
+        },
+      ],
+      expands: [
+        { storageKey: cmsPanelAutoSaveId('pos-quote-requests-panels-v3'), expandPx: quoteRequestsTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-doc-quote-panels-v1'), expandPx: docQuoteTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-doc-order-panels-v1'), expandPx: docOrderTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-doc-invoice-panels-v1'), expandPx: docInvoiceTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-doc-receipt-panels-v1'), expandPx: docReceiptTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-customers-panels-v1'), expandPx: customersTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-refunds-panels-v1'), expandPx: refundsTable.expandPx },
+        { storageKey: cmsPanelAutoSaveId('pos-sent-emails-panels-v1'), expandPx: sentEmailsTable.expandPx },
+      ],
+    });
+  };
+
+  useEffect(() => {
+    const flush = () => flushPosTablesToStorageRef.current();
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+    };
+  }, []);
 
   const viewQuotePopupHtml = useMemo(() => {
     if (!viewQuotePopup) return '';
@@ -1459,7 +1544,11 @@ const CMSDashboardInner: React.FC = () => {
   /** Keep History / edit-customer form in sync when `customers` refetches (store credit, balance). */
   useSyncSelectedCustomerFromList(customers, setSelectedCustomer);
 
-  const handleLogout = () => { logout(); navigate('/login'); };
+  const handleLogout = () => {
+    flushPosTablesToStorageRef.current();
+    logout();
+    navigate('/login');
+  };
 
   const posMenuItems: { key: PageKey; label: string; icon: React.FC<any>; badge?: number }[] = [
     { key: 'pos-dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -2097,33 +2186,41 @@ const CMSDashboardInner: React.FC = () => {
             {filteredDocs.map((doc: any, rowIdx: number) => (
               <div
                 key={doc?.id != null ? String(doc.id) : `${docType}-row-${rowIdx}`}
-                className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                className="grid min-w-0 w-full items-center gap-x-1.5 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
                 style={{ gridTemplateColumns: docTable.gridTemplateColumns }}
               >
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
-                  <span className="block truncate font-semibold text-[#1a2332]">{doc[numKey]}</span>
+                  <span className="block whitespace-nowrap font-semibold tabular-nums text-[#1a2332] max-lg:text-[12px]">
+                    {doc[numKey]}
+                  </span>
                 </div>
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
-                  <span className="block truncate">{doc.customer_name || 'Visitor'}</span>
+                  <span className="block truncate max-lg:text-[12px]">{doc.customer_name || 'Visitor'}</span>
                 </div>
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-2 text-left tabular-nums text-gray-500">
-                  <span className="block truncate whitespace-nowrap">{fmtDate(doc.created_at) || '—'}</span>
+                  <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
+                    {fmtDate(doc.created_at) || '—'}
+                  </span>
                 </div>
                 {docType === 'receipt' ? (
                   <>
                     <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left capitalize text-gray-500">
-                      <span className="block truncate">{(doc.payment_method || '—').replace('_', ' ')}</span>
+                      <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">
+                        {(doc.payment_method || '—').replace('_', ' ')}
+                      </span>
                     </div>
                     <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
-                      <span className="block truncate">{fmtMoney(doc.total)}</span>
+                      <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">{fmtMoney(doc.total)}</span>
                     </div>
                     <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
-                      <span className="block truncate">{fmtMoney((doc as POSReceipt).amount_paid)}</span>
+                      <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">
+                        {fmtMoney((doc as POSReceipt).amount_paid)}
+                      </span>
                     </div>
                   </>
                 ) : (
                   <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums">
-                    <span className="block truncate">{fmtMoney(doc.total)}</span>
+                    <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">{fmtMoney(doc.total)}</span>
                   </div>
                 )}
                 <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5 [&_.inline-flex]:max-w-full">
@@ -2161,7 +2258,7 @@ const CMSDashboardInner: React.FC = () => {
                 </div>
                 {docType === 'quote' && (
                   <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500 tabular-nums">
-                    <span className="block truncate whitespace-nowrap">
+                    <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
                       {(() => {
                         const at = (doc as POSQuote).email_sent_at || quoteEmailSentAtByQuoteId.get(doc.id);
                         return at ? fmtDate(at) : '—';
@@ -2713,6 +2810,7 @@ const CMSDashboardInner: React.FC = () => {
         header={
           <>
             <PanelGroup
+              key={cmsPanelAutoSaveId('pos-quote-requests-panels-v3')}
               ref={quoteRequestsTable.panelGroupRef}
               direction="horizontal"
               className="w-full items-stretch min-h-0"
@@ -2721,13 +2819,13 @@ const CMSDashboardInner: React.FC = () => {
             >
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[0]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[0]}
+                  minSize={quoteRequestsTable.panelMins[0]}
                   id="pos-qr-col-customer"
                   className="min-w-0 flex items-center"
                 >
                   <div
                     className={cn(
-                      'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+                      'relative w-full px-3 py-2.5 pl-4 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
                       'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
                     )}
                   >
@@ -2742,13 +2840,13 @@ const CMSDashboardInner: React.FC = () => {
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[1]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[1]}
+                  minSize={quoteRequestsTable.panelMins[1]}
                   id="pos-qr-col-product"
                   className="min-w-0 flex items-center"
                 >
                   <div
                     className={cn(
-                      'relative w-full px-3 py-2.5 pr-2 text-xs font-medium text-gray-600 max-sm:whitespace-normal sm:whitespace-nowrap',
+                      'relative w-full px-3 py-2.5 pr-2 text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
                       'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
                     )}
                   >
@@ -2763,7 +2861,7 @@ const CMSDashboardInner: React.FC = () => {
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[2]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[2]}
+                  minSize={quoteRequestsTable.panelMins[2]}
                   id="pos-qr-col-date"
                   className="min-w-0 flex items-center"
                 >
@@ -2784,13 +2882,13 @@ const CMSDashboardInner: React.FC = () => {
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[3]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[3]}
+                  minSize={quoteRequestsTable.panelMins[3]}
                   id="pos-qr-col-status"
                   className="min-w-0 flex items-center justify-center"
                 >
                   <div
                     className={cn(
-                      'relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-sm:px-1',
+                      'relative w-full px-3 py-2.5 text-center text-xs font-medium text-gray-600 max-lg:px-1',
                       'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
                     )}
                   >
@@ -2805,13 +2903,13 @@ const CMSDashboardInner: React.FC = () => {
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[4]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[4]}
+                  minSize={quoteRequestsTable.panelMins[4]}
                   id="pos-qr-col-email"
                   className="min-w-0 flex items-center"
                 >
                   <div
                     className={cn(
-                      'relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-sm:break-words max-sm:leading-snug sm:whitespace-nowrap',
+                      'relative w-full px-3 py-2.5 text-left text-xs font-medium text-gray-600 max-lg:whitespace-nowrap',
                       'after:pointer-events-none after:absolute after:right-0 after:top-1/2 after:z-[5] after:block after:h-3/4 after:w-px after:-translate-y-1/2 after:bg-gray-200 after:content-[""]',
                     )}
                   >
@@ -2826,7 +2924,7 @@ const CMSDashboardInner: React.FC = () => {
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={POS_DEFAULT_COL_PCT_QUOTE_REQUESTS[5]}
-                  minSize={POS_QUOTE_REQUESTS_PANEL_MIN[5]}
+                  minSize={quoteRequestsTable.panelMins[5]}
                   id="pos-qr-col-actions"
                   className="min-w-0 flex items-center justify-center self-stretch"
                 >
@@ -2844,29 +2942,46 @@ const CMSDashboardInner: React.FC = () => {
             {filteredQrRows.map((qr) => (
               <div
                 key={qr.id}
-                className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+                className="grid min-w-0 w-full items-center gap-x-1.5 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
                 style={{ gridTemplateColumns: quoteRequestsTable.gridTemplateColumns }}
               >
-                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 max-sm:break-words">
-                  <p className="font-semibold text-[#1a2332] break-words [overflow-wrap:anywhere] leading-snug">
-                    {qr.name}
-                  </p>
-                  <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">
-                    {qr.email} {qr.phone && `| ${qr.phone}`}
-                  </p>
-                  {qr.company && (
-                    <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.company}</p>
-                  )}
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 max-lg:py-2">
+                  <div className="max-lg:line-clamp-4 max-lg:overflow-hidden [overflow-wrap:anywhere]">
+                    <p className="font-semibold text-[#1a2332] leading-snug max-lg:text-[12px] max-lg:leading-tight">
+                      {qr.name}
+                    </p>
+                    <div className="mt-0.5 text-xs text-gray-400">
+                      <span className="hidden lg:inline">
+                        {qr.email}
+                        {qr.phone ? ` | ${qr.phone}` : ''}
+                      </span>
+                      <div className="flex flex-col gap-1 lg:hidden">
+                        {qr.email ? (
+                          <p className="break-words leading-snug [overflow-wrap:anywhere]">{qr.email}</p>
+                        ) : null}
+                        {qr.phone ? <p className="tabular-nums leading-snug">{qr.phone}</p> : null}
+                      </div>
+                    </div>
+                    {qr.company && (
+                      <p className="mt-0.5 text-xs text-gray-400 max-lg:line-clamp-2 max-lg:leading-snug">{qr.company}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="min-w-0 overflow-hidden px-3 py-2.5 pr-2 max-sm:break-words">
-                  <p className="text-inherit text-gray-800 break-words [overflow-wrap:anywhere] leading-snug">
-                    {stripQuoteRequestProductQtyDisplay(qr.product || '')}
-                  </p>
-                  <p className="text-xs text-gray-400 break-words [overflow-wrap:anywhere] mt-0.5">{qr.category}</p>
-                  {qr.quantity && <p className="text-xs text-gray-400">Qty: {qr.quantity}</p>}
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 pr-2 max-lg:py-2">
+                  <div className="max-lg:line-clamp-4 max-lg:overflow-hidden [overflow-wrap:anywhere]">
+                    <p className="text-inherit leading-snug text-gray-800 max-lg:text-[12px] max-lg:leading-tight">
+                      {stripQuoteRequestProductQtyDisplay(qr.product || '')}
+                    </p>
+                    <p className="mt-0.5 text-xs text-gray-400 max-lg:line-clamp-2 max-lg:leading-snug">{qr.category}</p>
+                    {qr.quantity && (
+                      <p className="text-xs text-gray-400 max-lg:whitespace-nowrap">Qty: {qr.quantity}</p>
+                    )}
+                  </div>
                 </div>
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-2 text-gray-500 tabular-nums">
-                  <span className="block truncate">{fmtDatePOS(qr.created_at) || '—'}</span>
+                  <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
+                    {fmtDatePOS(qr.created_at) || '—'}
+                  </span>
                 </div>
                 <div className="min-w-0 overflow-hidden px-3 py-2.5 text-center max-sm:px-1">
                   <div className="flex justify-center max-sm:min-w-0 max-sm:px-0.5">
@@ -2875,7 +2990,7 @@ const CMSDashboardInner: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-700 max-sm:break-words max-sm:leading-snug max-sm:whitespace-normal sm:truncate sm:tabular-nums">
+                <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left tabular-nums text-gray-700">
                   {(() => {
                     const linked = findQuoteForWebsiteRequest(qr, quotes);
                     const rawAt =
@@ -2886,12 +3001,14 @@ const CMSDashboardInner: React.FC = () => {
                         ? String(linked.email_sent_at)
                         : '') ||
                       (linked?.id ? quoteEmailSentAtByQuoteId.get(linked.id) : undefined);
-                    if (!rawAt) return <span className="text-gray-400 sm:block sm:truncate">—</span>;
+                    if (!rawAt) return <span className="text-gray-400">—</span>;
                     const formatted = fmtDatePOS(rawAt);
                     return formatted ? (
-                      <span className="max-sm:[overflow-wrap:anywhere] sm:block sm:truncate">{formatted}</span>
+                      <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
+                        {formatted}
+                      </span>
                     ) : (
-                      <span className="text-gray-400 sm:block sm:truncate">—</span>
+                      <span className="text-gray-400">—</span>
                     );
                   })()}
                 </div>
@@ -3282,26 +3399,28 @@ const CMSDashboardInner: React.FC = () => {
           {displayCustomers.map((c) => (
             <div
               key={c.id}
-              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-1.5 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: customersTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
-                <span className="block truncate font-semibold text-[#1a2332]">{c.name}</span>
+                <span className="block truncate font-semibold text-[#1a2332] max-lg:text-[12px]">{c.name}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
-                <span className="block truncate">
+                <span className="block whitespace-nowrap text-[12px] sm:text-[13px] max-lg:truncate">
                   {c.phone}
                   {c.email && ` | ${c.email}`}
                 </span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
-                <span className="block truncate">{c.company || '-'}</span>
+                <span className="block truncate max-lg:text-[12px]">{c.company || '-'}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-semibold tabular-nums text-green-800">
-                <span className="block truncate">{fmtMoney(c.store_credit || 0)}</span>
+                <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">{fmtMoney(c.store_credit || 0)}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pr-10 text-right font-semibold tabular-nums text-amber-800">
-                <span className="block truncate">{(c.account_balance ?? 0) > 0 ? fmtMoney(c.account_balance ?? 0) : '—'}</span>
+                <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">
+                  {(c.account_balance ?? 0) > 0 ? fmtMoney(c.account_balance ?? 0) : '—'}
+                </span>
               </div>
               <div className="flex min-h-0 min-w-0 items-center justify-center self-stretch overflow-hidden px-2 py-2.5">
                   <DropdownMenu>
@@ -3534,23 +3653,27 @@ const CMSDashboardInner: React.FC = () => {
           {filtered.map(r => (
             <div
               key={r.id}
-              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-1.5 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: refundsTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
-                <span className="block truncate font-semibold text-[#1a2332]">{displayRefundDocNumber(r.refund_number)}</span>
+                <span className="block whitespace-nowrap font-semibold tabular-nums text-[#1a2332] max-lg:text-[12px]">
+                  {displayRefundDocNumber(r.refund_number)}
+                </span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
-                <span className="block truncate">{r.customer_name || '-'}</span>
+                <span className="block truncate max-lg:text-[12px]">{r.customer_name || '-'}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left capitalize text-gray-600">
-                <span className="block truncate">{r.refund_type.replace('_', ' ')}</span>
+                <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">{r.refund_type.replace('_', ' ')}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-right font-bold tabular-nums text-red-600">
-                <span className="block truncate">{fmtMoney(r.total)}</span>
+                <span className="block whitespace-nowrap text-[12px] sm:text-[13px]">{fmtMoney(r.total)}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left tabular-nums text-gray-500">
-                <span className="block truncate whitespace-nowrap">{fmtDate(r.created_at)}</span>
+                <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
+                  {fmtDate(r.created_at)}
+                </span>
               </div>
               <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5">
                 <StatusBadge status={r.status} />
@@ -3755,21 +3878,27 @@ const CMSDashboardInner: React.FC = () => {
           {rows.map(e => (
             <div
               key={e.id}
-              className="grid min-w-0 w-full items-center gap-x-0 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
+              className="grid min-w-0 w-full items-center gap-x-1.5 border-b border-gray-100 bg-white text-[13px] transition-colors duration-150 hover:bg-gray-50/70"
               style={{ gridTemplateColumns: sentEmailsTable.gridTemplateColumns }}
             >
               <div className="min-w-0 overflow-hidden px-3 py-2.5 pl-4 text-left">
-                <p className="truncate font-semibold leading-snug text-[#1a2332]">{e.recipient_name || e.recipient_email}</p>
-                <p className="truncate text-xs leading-snug text-gray-400">{e.recipient_email}</p>
+                <p className="truncate font-semibold leading-tight text-[#1a2332] max-lg:text-[12px]">
+                  {e.recipient_name || e.recipient_email}
+                </p>
+                <p className="truncate text-[11px] leading-tight text-gray-400 max-lg:text-[10px]">{e.recipient_email}</p>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-600">
-                <span className="block truncate">{e.subject}</span>
+                <span className="block truncate text-[12px] sm:text-[13px] leading-snug">{e.subject}</span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left text-gray-500">
-                <span className="block truncate">{formatSentEmailDocumentDisplay(e.document_type, e.document_number) || '-'}</span>
+                <span className="block truncate text-[12px] sm:text-[13px]">
+                  {formatSentEmailDocumentDisplay(e.document_type, e.document_number) || '-'}
+                </span>
               </div>
               <div className="min-w-0 overflow-hidden px-3 py-2.5 text-left tabular-nums text-gray-500">
-                <span className="block truncate whitespace-nowrap">{fmtDate(e.sent_at)}</span>
+                <span className="inline-block min-w-[7.5rem] whitespace-nowrap text-[12px] sm:min-w-0 sm:text-[13px]">
+                  {fmtDate(e.sent_at)}
+                </span>
               </div>
               <div className="flex min-w-0 items-center justify-center overflow-hidden px-3 py-2.5">
                 <StatusBadge status={e.status} />

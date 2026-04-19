@@ -103,7 +103,7 @@ const CMSLogin: React.FC = () => {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Enter your username"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 sm:pl-12 pr-4 py-3.5 sm:py-3 text-white placeholder-gray-500 outline-none focus:border-[#e31e24]/50 focus:ring-2 focus:ring-[#e31e24]/20 transition-all text-sm"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 sm:pl-12 pr-4 py-3.5 sm:py-3 text-base sm:text-sm text-white placeholder-gray-500 outline-none focus:border-[#e31e24]/50 focus:ring-2 focus:ring-[#e31e24]/20 transition-all"
                   autoComplete="username"
                   autoFocus
                 />
@@ -122,7 +122,7 @@ const CMSLogin: React.FC = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 sm:pl-12 pr-12 py-3.5 sm:py-3 text-white placeholder-gray-500 outline-none focus:border-[#e31e24]/50 focus:ring-2 focus:ring-[#e31e24]/20 transition-all text-sm"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 sm:pl-12 pr-12 py-3.5 sm:py-3 text-base sm:text-sm text-white placeholder-gray-500 outline-none focus:border-[#e31e24]/50 focus:ring-2 focus:ring-[#e31e24]/20 transition-all"
                   autoComplete="current-password"
                 />
                 <button
